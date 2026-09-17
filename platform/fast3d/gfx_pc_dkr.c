@@ -78,6 +78,9 @@
 #include "display_config.h"
 
 #include "gfx_mipgen.h"
+#if defined(__vita__)
+#include <psp2/kernel/processmgr.h>
+#endif
 #include "gfx_texture_cache_key.h"
 #include "gfx_texture_edge.h"
 #include "gfx_font_sdf.h"
@@ -2014,6 +2017,7 @@ struct ColorCombiner {
     uint64_t shader_id0;
     uint32_t shader_id1;
     struct ShaderProgram *prg;
+    struct CCFeatures feat;
     uint8_t shader_input_mapping[2][7]; /* [color/alpha][input_idx] → G_CCMUX_* */
 };
 
@@ -2182,22 +2186,64 @@ static void dkr_generate_cc(struct ColorCombiner *comb, uint64_t cc_id, uint32_t
     comb->shader_id0 = shader_id0;
     comb->shader_id1 = shader_id1;
     comb->prg = dkr_lookup_or_create_shader(shader_id0, shader_id1);
+    gfx_cc_get_features(shader_id0, shader_id1, &comb->feat);
     memcpy(comb->shader_input_mapping, shader_input_mapping, sizeof(shader_input_mapping));
 }
 
 /* Small combiner cache (avoids re-deriving the input mapping each draw). */
 #define DKR_CC_POOL_SIZE 256
+#define DKR_CC_BUCKET_COUNT (DKR_CC_POOL_SIZE * 2)
 static struct ColorCombiner cc_pool[DKR_CC_POOL_SIZE];
 static int cc_pool_size;
+static int cc_bucket[DKR_CC_BUCKET_COUNT];
+static int cc_chain_next[DKR_CC_POOL_SIZE];
+static bool cc_index_initialized;
+
+static uint32_t dkr_combiner_hash(uint64_t cc_id, uint32_t cc_options) {
+    uint32_t hash = 2166136261u;
+    hash = (hash ^ (uint32_t)cc_id) * 16777619u;
+    hash = (hash ^ (uint32_t)(cc_id >> 32)) * 16777619u;
+    return (hash ^ cc_options) * 16777619u;
+}
+
+static void dkr_combiner_index_reset(void) {
+    for (int bucket = 0; bucket < DKR_CC_BUCKET_COUNT; bucket++) {
+        cc_bucket[bucket] = -1;
+    }
+    for (int slot = 0; slot < DKR_CC_POOL_SIZE; slot++) {
+        cc_chain_next[slot] = -1;
+    }
+    cc_index_initialized = true;
+}
 
 static struct ColorCombiner *dkr_lookup_or_create_combiner(uint64_t cc_id, uint32_t cc_options) {
-    for (int i = 0; i < cc_pool_size; i++) {
-        if (cc_pool[i].cc_id == cc_id && cc_pool[i].cc_options == cc_options)
-            return &cc_pool[i];
+    uint32_t bucket;
+    int slot;
+
+    if (!cc_index_initialized) {
+        dkr_combiner_index_reset();
     }
-    if (cc_pool_size == DKR_CC_POOL_SIZE) cc_pool_size = 0; /* regenerable; wrap */
-    struct ColorCombiner *comb = &cc_pool[cc_pool_size++];
+    bucket = dkr_combiner_hash(cc_id, cc_options) % DKR_CC_BUCKET_COUNT;
+    for (slot = cc_bucket[bucket]; slot >= 0;
+         slot = cc_chain_next[slot]) {
+        if (cc_pool[slot].cc_id == cc_id &&
+            cc_pool[slot].cc_options == cc_options) {
+            return &cc_pool[slot];
+        }
+    }
+    if (cc_pool_size == DKR_CC_POOL_SIZE) {
+        /* Regenerable pool: retain the historical all-at-once wrap policy,
+         * but retire its index at the same boundary. Shader programs remain
+         * backend-owned and are found through their independent cache. */
+        cc_pool_size = 0;
+        dkr_combiner_index_reset();
+        bucket = dkr_combiner_hash(cc_id, cc_options) % DKR_CC_BUCKET_COUNT;
+    }
+    slot = cc_pool_size++;
+    struct ColorCombiner *comb = &cc_pool[slot];
     dkr_generate_cc(comb, cc_id, cc_options);
+    cc_chain_next[slot] = cc_bucket[bucket];
+    cc_bucket[bucket] = slot;
     return comb;
 }
 
@@ -2347,6 +2393,28 @@ static bool dkr_lineswap_on(void) {
 /* Decode the render tile's texture into RGBA32 and upload it. Standard N64 tile
  * model: source row pitch = tile.line_size_bytes, dimensions from SETTILESIZE
  * (falling back to the loaded block size). */
+#if defined(__vita__)
+/* Microseconds of HD replacement upload charged to the current frame. The
+ * pending-swap gate below spends against this rather than counting textures:
+ * an upload cost 77 ms before the decode helper existed and ~3 ms after, so a
+ * fixed count is either a stall or a needless throttle. */
+static uint64_t dkr_hd_upload_us;
+static int      dkr_hd_upload_frame = -1;
+
+static uint64_t dkr_vita_now_us(void) {
+    return (uint64_t)sceKernelGetProcessTimeWide();
+}
+
+static void dkr_hd_upload_charge(uint64_t started_us) {
+    const uint64_t now = dkr_vita_now_us();
+    if (dkr_hd_upload_frame != dkr_frame_index) {
+        dkr_hd_upload_frame = dkr_frame_index;
+        dkr_hd_upload_us = 0;
+    }
+    dkr_hd_upload_us += now > started_us ? now - started_us : 0u;
+}
+#endif
+
 /* Scratch for mip levels 1..N-1; grows to the largest texture seen. */
 static uint8_t *tex_mip_buf;
 static size_t tex_mip_cap;
@@ -2721,10 +2789,19 @@ static bool dkr_upload_tile_texture(uint8_t td, bool cutout,
  * at distance. */
 static bool dkr_upload_override_texture(const MdkrModTexture *texture,
                                         bool cutout) {
+    uint64_t metric_started;
+#if defined(__vita__)
+    const uint64_t upload_started_us = dkr_vita_now_us();
+#endif
+    MdkrVitaProfileScope profile_scope;
+    bool uploaded = false;
     if (texture == NULL || texture->rgba == NULL ||
         texture->width <= 0 || texture->height <= 0) {
         return false;
     }
+    metric_started = mdkr_vita_profiler_metric_begin();
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_MOD_OVERRIDE_UPLOAD,
+                                  &profile_scope);
 #if defined(__vita__)
     /* vitaGL issue #24 corrupts mip levels for NPOT textures. */
     const bool mip_dimensions_supported =
@@ -2732,6 +2809,39 @@ static bool dkr_upload_override_texture(const MdkrModTexture *texture,
                          (uint32_t)texture->height);
 #else
     const bool mip_dimensions_supported = true;
+#endif
+#if defined(__vita__)
+    /* Prebuilt on the decode helper thread: describe the levels and upload,
+     * with no filtering on this thread at all. Cutout textures still need the
+     * coverage-preserving variant, so those fall through to the CPU path. */
+    /* Prefer a chain built with the matching filter; otherwise take the
+     * ordinary one rather than filtering on this thread. */
+    const uint8_t *prebuilt = (cutout && texture->cutout_mips != NULL)
+                                  ? texture->cutout_mips : texture->mips;
+    const size_t prebuilt_bytes = (cutout && texture->cutout_mips != NULL)
+                                      ? texture->cutout_mip_bytes
+                                      : texture->mip_bytes;
+    if (g_pcMipmaps && mip_dimensions_supported && prebuilt != NULL &&
+        gfx_rapi->upload_texture_mipped != NULL &&
+        gfx_mip_level_count(texture->width, texture->height) > 1) {
+        GfxMipChain chain;
+        if (gfx_mip_chain_layout(texture->rgba, texture->width,
+                                 texture->height, prebuilt,
+                                 prebuilt_bytes, &chain)) {
+            enum { DKR_VITA_PREBUILT_MAX_MIP_LEVELS = 4 };
+            if (chain.level_count > DKR_VITA_PREBUILT_MAX_MIP_LEVELS) {
+                chain.level_count = DKR_VITA_PREBUILT_MAX_MIP_LEVELS;
+            }
+            if (gfx_rapi->upload_texture_mipped(chain.level, chain.width,
+                                                chain.height,
+                                                chain.level_count)) {
+                gfx_dkr_mipmapped_uploads++;
+                gfx_dkr_mip_levels_uploaded += (uint64_t)chain.level_count;
+                uploaded = true;
+                goto done;
+            }
+        }
+    }
 #endif
     if (g_pcMipmaps && mip_dimensions_supported &&
         gfx_rapi->upload_texture_mipped != NULL &&
@@ -2760,12 +2870,28 @@ static bool dkr_upload_override_texture(const MdkrModTexture *texture,
                 gfx_dkr_mipmapped_uploads++;
                 gfx_dkr_mip_levels_uploaded +=
                     (uint64_t)chain.level_count;
-                return true;
+                uploaded = true;
+                goto done;
             }
         }
     }
-    return gfx_rapi->upload_texture(texture->rgba, texture->width,
-                                    texture->height);
+    uploaded = gfx_rapi->upload_texture(texture->rgba, texture->width,
+                                        texture->height);
+done:
+    mdkr_vita_profiler_zone_end(&profile_scope);
+    mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_OVERRIDE_UPLOAD_US,
+                                  metric_started);
+#if defined(__vita__)
+    dkr_hd_upload_charge(upload_started_us);
+#endif
+    if (uploaded) {
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_UPLOADS, 1u);
+        mdkr_vita_profiler_counter_add(
+            MDKR_VP_COUNTER_MOD_UPLOADED_BYTES,
+            (uint64_t)(unsigned int)texture->width *
+                (uint64_t)(unsigned int)texture->height * 4u);
+    }
+    return uploaded;
 }
 
 /* Every non-content value that can change decoded or uploaded bytes belongs in
@@ -2780,9 +2906,17 @@ static bool dkr_upload_override_texture(const MdkrModTexture *texture,
  * on desktop, but lets an HD pack retain far more than the Vita's application
  * memory.  Reusing 256 texture objects keeps the working set bounded while
  * still covering substantially more than one ordinary track/HUD scene. */
-#define DKR_TEXCACHE_SIZE 256
+#define DKR_TEXCACHE_SIZE 512
+/* The entry count is no longer the memory bound on Vita: a GPU byte budget
+ * is, enforced least-recently-used-first after each upload. Textures bound in
+ * the current frame are never evicted by the budget, so a scene heavier than
+ * the budget temporarily exceeds it instead of thrashing re-uploads. */
+/* 64 MiB: vitaGL reported ~85 MiB free VRAM at boot, and every byte over what
+ * the device can hold pushes allocations into slower pools. */
+#define DKR_TEXCACHE_GPU_BYTES_MAX ((uint64_t)64u * 1024u * 1024u)
 #else
 #define DKR_TEXCACHE_SIZE 1024
+#define DKR_TEXCACHE_GPU_BYTES_MAX ((uint64_t)0u) /* unbounded */
 #endif
 struct DkrTexCacheEntry {
     struct DkrTexCacheKey key;
@@ -2790,9 +2924,149 @@ struct DkrTexCacheEntry {
     uint32_t upload_w, upload_h;
     uint32_t src_hash;    /* content hash at upload time (verify mode only) */
     bool valid;
+    /* Vita: the ROM texture is standing in while the helper thread decodes
+     * this tile's HD replacement; a later bind swaps it in. */
+    bool override_pending;
+    uint32_t pending_rice_crc;
+    /* LRU bookkeeping. last_use is a monotonic bind clock; last_frame lets the
+     * budget skip textures the current frame already drew with. gpu_bytes is
+     * the physical upload size (replacement dims, mip chain included). */
+    uint64_t last_use;
+    uint64_t gpu_bytes;
+    int last_frame;
 };
 static struct DkrTexCacheEntry tex_cache[DKR_TEXCACHE_SIZE];
 static int tex_cache_next;
+static uint64_t tex_cache_use_clock;
+static uint64_t tex_cache_gpu_bytes;
+uint32_t gfx_dkr_texcache_lru_evictions;
+uint32_t gfx_dkr_texcache_budget_evictions;
+#define DKR_TEXCACHE_BUCKET_COUNT (DKR_TEXCACHE_SIZE * 2)
+static int tex_cache_bucket[DKR_TEXCACHE_BUCKET_COUNT];
+static int tex_cache_chain_next[DKR_TEXCACHE_SIZE];
+static bool tex_cache_index_initialized;
+#define DKR_TEXCACHE_RECENT_SIZE 8
+static int tex_cache_recent[2][DKR_TEXCACHE_RECENT_SIZE] = {
+    { -1, -1, -1, -1, -1, -1, -1, -1 },
+    { -1, -1, -1, -1, -1, -1, -1, -1 },
+};
+
+static void dkr_texcache_note_recent(int unit, int slot) {
+    int position;
+    if (unit < 0 || unit >= 2 || slot < 0 || slot >= DKR_TEXCACHE_SIZE) {
+        return;
+    }
+    for (position = 0; position < DKR_TEXCACHE_RECENT_SIZE; position++) {
+        if (tex_cache_recent[unit][position] == slot) {
+            break;
+        }
+    }
+    if (position >= DKR_TEXCACHE_RECENT_SIZE) {
+        position = DKR_TEXCACHE_RECENT_SIZE - 1;
+    }
+    for (; position > 0; position--) {
+        tex_cache_recent[unit][position] =
+            tex_cache_recent[unit][position - 1];
+    }
+    tex_cache_recent[unit][0] = slot;
+}
+
+static uint32_t dkr_texcache_hash_word(uint32_t hash, uint32_t value) {
+    hash ^= value;
+    return hash * 16777619u;
+}
+
+static uint32_t dkr_texcache_key_hash(const struct DkrTexCacheKey *key) {
+    uintptr_t addr = (uintptr_t)key->addr;
+    uint32_t hash = 2166136261u;
+
+    hash = dkr_texcache_hash_word(hash, (uint32_t)addr);
+#if UINTPTR_MAX > UINT32_MAX
+    hash = dkr_texcache_hash_word(hash, (uint32_t)(addr >> 32));
+#endif
+    hash = dkr_texcache_hash_word(hash, key->source_line_bytes);
+    hash = dkr_texcache_hash_word(hash, key->source_size_bytes);
+    hash = dkr_texcache_hash_word(hash, key->palette_hash);
+    hash = dkr_texcache_hash_word(hash, key->palette_fmt);
+    hash = dkr_texcache_hash_word(hash,
+        ((uint32_t)key->width << 16) | key->height);
+    hash = dkr_texcache_hash_word(hash,
+        ((uint32_t)key->fmt << 24) | ((uint32_t)key->siz << 16) |
+        ((uint32_t)key->palette << 8) | (uint32_t)key->line_swapped);
+    hash = dkr_texcache_hash_word(hash,
+        ((uint32_t)key->font_remastered << 3) |
+        ((uint32_t)key->font_outline << 2) |
+        ((uint32_t)key->mipmaps << 1) | (uint32_t)key->cutout);
+    return dkr_texcache_hash_word(hash, key->override_generation);
+}
+
+static void dkr_texcache_index_init(void) {
+    if (tex_cache_index_initialized) {
+        return;
+    }
+    for (int bucket = 0; bucket < DKR_TEXCACHE_BUCKET_COUNT; bucket++) {
+        tex_cache_bucket[bucket] = -1;
+    }
+    for (int slot = 0; slot < DKR_TEXCACHE_SIZE; slot++) {
+        tex_cache_chain_next[slot] = -1;
+    }
+    tex_cache_index_initialized = true;
+}
+
+static void dkr_texcache_index_insert(int slot) {
+    const uint32_t bucket = dkr_texcache_key_hash(&tex_cache[slot].key) %
+                            DKR_TEXCACHE_BUCKET_COUNT;
+    dkr_texcache_index_init();
+    tex_cache_chain_next[slot] = tex_cache_bucket[bucket];
+    tex_cache_bucket[bucket] = slot;
+}
+
+static void dkr_texcache_index_remove(int slot) {
+    int *link;
+    uint32_t bucket;
+
+    if (!tex_cache_index_initialized || slot < 0 ||
+        slot >= DKR_TEXCACHE_SIZE || !tex_cache[slot].valid) {
+        return;
+    }
+    bucket = dkr_texcache_key_hash(&tex_cache[slot].key) %
+             DKR_TEXCACHE_BUCKET_COUNT;
+    link = &tex_cache_bucket[bucket];
+    while (*link >= 0) {
+        if (*link == slot) {
+            *link = tex_cache_chain_next[slot];
+            tex_cache_chain_next[slot] = -1;
+            return;
+        }
+        link = &tex_cache_chain_next[*link];
+    }
+}
+
+static int dkr_texcache_find(int unit, const struct DkrTexCacheKey *key) {
+    if (unit >= 0 && unit < 2) {
+        for (int recent = 0; recent < DKR_TEXCACHE_RECENT_SIZE; recent++) {
+            const int slot = tex_cache_recent[unit][recent];
+            if (slot >= 0 && slot < DKR_TEXCACHE_SIZE &&
+                tex_cache[slot].valid &&
+                dkr_texcache_key_equal(&tex_cache[slot].key, key)) {
+                dkr_texcache_note_recent(unit, slot);
+                return slot;
+            }
+        }
+    }
+    dkr_texcache_index_init();
+    const uint32_t bucket = dkr_texcache_key_hash(key) %
+                            DKR_TEXCACHE_BUCKET_COUNT;
+    for (int slot = tex_cache_bucket[bucket]; slot >= 0;
+         slot = tex_cache_chain_next[slot]) {
+        if (tex_cache[slot].valid &&
+            dkr_texcache_key_equal(&tex_cache[slot].key, key)) {
+            dkr_texcache_note_recent(unit, slot);
+            return slot;
+        }
+    }
+    return -1;
+}
 
 static void dkr_forget_texture_binding(uint32_t texture_id) {
     for (int unit = 0; unit < 2; unit++) {
@@ -2811,6 +3085,18 @@ static void dkr_texcache_delete_slot(int slot) {
 
     if (slot < 0 || slot >= DKR_TEXCACHE_SIZE) {
         return;
+    }
+    dkr_texcache_index_remove(slot);
+    if (tex_cache[slot].valid) {
+        tex_cache_gpu_bytes = tex_cache_gpu_bytes >= tex_cache[slot].gpu_bytes
+            ? tex_cache_gpu_bytes - tex_cache[slot].gpu_bytes : 0u;
+    }
+    for (int unit = 0; unit < 2; unit++) {
+        for (int recent = 0; recent < DKR_TEXCACHE_RECENT_SIZE; recent++) {
+            if (tex_cache_recent[unit][recent] == slot) {
+                tex_cache_recent[unit][recent] = -1;
+            }
+        }
     }
     texture_id = tex_cache[slot].texture_id;
     if (texture_id == 0) {
@@ -2975,11 +3261,21 @@ static uint32_t dkr_src_hash(const uint8_t *addr, uint32_t size) {
     return h;
 }
 
+static uint32_t dkr_palette_generation;
+static uint32_t dkr_palette_hash_generation = UINT32_MAX;
+static uint32_t dkr_palette_hash_cached;
+
 static uint32_t dkr_palette_hash(uint8_t fmt) {
     if (fmt != G_IM_FMT_CI) return 0;
-    uint32_t h = 2166136261u;
-    for (int i = 0; i < 256; i++) { h = (h ^ rdp.palette[i]) * 16777619u; }
-    return h;
+    if (dkr_palette_hash_generation != dkr_palette_generation) {
+        uint32_t hash = 2166136261u;
+        for (int i = 0; i < 256; i++) {
+            hash = (hash ^ rdp.palette[i]) * 16777619u;
+        }
+        dkr_palette_hash_cached = hash;
+        dkr_palette_hash_generation = dkr_palette_generation;
+    }
+    return dkr_palette_hash_cached;
 }
 
 /* The same TLUT words decode to different pixels under G_TT_RGBA16 and
@@ -2988,6 +3284,52 @@ static uint32_t dkr_palette_hash(uint8_t fmt) {
  * cache entries. */
 static uint32_t dkr_palette_fmt_key(uint8_t fmt) {
     return fmt == G_IM_FMT_CI ? dkr_textlut_fmt() : 0u;
+}
+
+/* Slot for a cache miss: a free slot when one exists, otherwise the least
+ * recently bound entry (was a round-robin FIFO that evicted textures still in
+ * use, forcing mid-race digest + Rice CRC + decode + re-upload). */
+static int dkr_texcache_pick_victim(void) {
+    int victim = -1;
+    for (int n = 0; n < DKR_TEXCACHE_SIZE; n++) {
+        const int slot = (tex_cache_next + n) % DKR_TEXCACHE_SIZE;
+        if (!tex_cache[slot].valid) {
+            tex_cache_next = (slot + 1) % DKR_TEXCACHE_SIZE;
+            return slot;
+        }
+        if (victim < 0 || tex_cache[slot].last_use < tex_cache[victim].last_use) {
+            victim = slot;
+        }
+    }
+    gfx_dkr_texcache_lru_evictions++;
+    return victim < 0 ? 0 : victim;
+}
+
+/* Keep physical GPU texture bytes under the platform budget. Called right
+ * after an upload, when the pending batch has already been flushed, so
+ * deleting other texture objects cannot change triangles already emitted. */
+static void dkr_texcache_enforce_budget(int keep) {
+    if (DKR_TEXCACHE_GPU_BYTES_MAX == 0u) {
+        return;
+    }
+    while (tex_cache_gpu_bytes > DKR_TEXCACHE_GPU_BYTES_MAX) {
+        int victim = -1;
+        for (int slot = 0; slot < DKR_TEXCACHE_SIZE; slot++) {
+            if (slot == keep || !tex_cache[slot].valid ||
+                tex_cache[slot].last_frame == dkr_frame_index) {
+                continue;
+            }
+            if (victim < 0 ||
+                tex_cache[slot].last_use < tex_cache[victim].last_use) {
+                victim = slot;
+            }
+        }
+        if (victim < 0) {
+            break;
+        }
+        dkr_texcache_delete_slot(victim);
+        gfx_dkr_texcache_budget_evictions++;
+    }
 }
 
 /* Bind the render tile's texture to a sampler unit; import+cache on miss.
@@ -3008,10 +3350,11 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     const uint32_t source_line_bytes =
         dkr_tile_source_line_bytes(td, source_size_bytes);
     bool lsw = rdp.loaded_texture[tmem].line_swapped;
-    const GfxFontRegistryEntry *font_entry =
-        gfx_font_registry_find(&dkr_font_registry, source_identity);
+    const bool font_text_draw = dkr_is_font_text_draw();
+    const GfxFontRegistryEntry *font_entry = font_text_draw
+        ? gfx_font_registry_find(&dkr_font_registry, source_identity)
+        : NULL;
     bool font_atlas_draw =
-        dkr_is_font_text_draw() &&
         font_entry != NULL && font_entry->region_count != 0;
     bool font_outline =
         font_atlas_draw && g_pcHiresText && dkr_font_outline_enabled() &&
@@ -3038,21 +3381,32 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         .override_generation = mdkr_mod_texture_generation(),
     };
 
-    int hit = -1;
-    for (int i = 0; i < DKR_TEXCACHE_SIZE; i++) {
-        if (tex_cache[i].valid &&
-            dkr_texcache_key_equal(&tex_cache[i].key, &key)) {
-            hit = i; break;
+    int hit = dkr_texcache_find(unit, &key);
+#if defined(__vita__)
+    if (hit >= 0 && tex_cache[hit].override_pending) {
+        /* Spend a time budget on HD swaps, not a texture count: whatever the
+         * per-upload cost turns out to be, a frame gives up at most this much
+         * to them and the rest arrive next frame. */
+        enum { DKR_VITA_HD_SWAP_BUDGET_US = 8000 };
+        const uint64_t spent =
+            dkr_hd_upload_frame == dkr_frame_index ? dkr_hd_upload_us : 0u;
+        if (spent < (uint64_t)DKR_VITA_HD_SWAP_BUDGET_US &&
+            !mdkr_mod_texture_rice_pending(tex_cache[hit].pending_rice_crc,
+                                           (int)fmt, (int)siz)) {
+            /* Batched triangles may still name the stand-in texture. */
+            gfx_flush();
+            dkr_texcache_delete_slot(hit);
+            hit = -1;
         }
     }
+#endif
     const bool verify = dkr_texcache_verify_on();
     const uint32_t now_hash =
         verify ? dkr_src_hash(addr, source_size_bytes) : 0;
     const bool was_hit = (hit >= 0);
     if (hit < 0) {
-        int slot = tex_cache_next;
+        int slot = dkr_texcache_pick_victim();
         bool acquired = !tex_cache[slot].valid;
-        tex_cache_next = (tex_cache_next + 1) % DKR_TEXCACHE_SIZE;
         uint32_t tid = acquired ? gfx_rapi->new_texture()
                                 : tex_cache[slot].texture_id;
         if (tid == 0) {
@@ -3061,12 +3415,24 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         if (acquired) {
             dkr_texture_id_acquired(tid);
         } else {
+            dkr_texcache_index_remove(slot);
+            /* The previous occupant's bytes leave the budget now; the entry is
+             * rewritten on success and deleted on failure below. */
+            tex_cache_gpu_bytes = tex_cache_gpu_bytes >= tex_cache[slot].gpu_bytes
+                ? tex_cache_gpu_bytes - tex_cache[slot].gpu_bytes : 0u;
+            tex_cache[slot].gpu_bytes = 0u;
+            tex_cache[slot].valid = false;
             /* The backend object survives cache-slot replacement, but its
              * decoded pixels and mip layout are about to change. Forget every
              * frontend sampler memo that names this ID so the first draw of the
              * replacement republishes filtering, wrap and LOD policy. */
             dkr_forget_texture_binding(tid);
         }
+        /* A recycled texture object may still be referenced by triangles in
+         * the CPU batch. Submit those triangles before replacing its pixels;
+         * changing the object first would make the older batch sample the new
+         * image when it is eventually drawn. */
+        gfx_flush();
         gfx_rapi->select_texture(unit, tid);
         uint32_t uw = 0, uh = 0;
         DkrFontDerivation derived = DKR_FONT_DERIVED_NONE;
@@ -3082,8 +3448,10 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
          * the arena edge, and the decode drops those rows rather than reading
          * them. Hashing further than the decoder reads would read off the end
          * of the arena for the sake of a name. */
-        MdkrModTexture over = { NULL, 0, 0 };
+        MdkrModTexture over = { NULL, 0, NULL, 0, NULL, 0, 0 };
         bool over_used = false;
+        bool rice_pending = false;
+        uint32_t pending_crc = 0;
         char digest[33];
         bool digest_known = false;
         /* The span the digest was actually taken over, kept for the dump
@@ -3119,8 +3487,13 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
                 if (mdkr_rice_crc32(addr, digest_bytes, (int)tw, (int)th,
                                     (int)siz, (int)source_line_bytes,
                                     &rice_key)) {
-                    over_used = mdkr_mod_texture_lookup_rice(
-                        rice_key, (int)fmt, (int)siz, &over) != 0;
+                    const int rice_result = mdkr_mod_texture_lookup_rice_async(
+                        rice_key, (int)fmt, (int)siz, &over);
+                    over_used = rice_result == 1;
+                    if (rice_result == 2) {
+                        rice_pending = true;
+                        pending_crc = rice_key;
+                    }
                 }
             }
         }
@@ -3226,13 +3599,40 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
                 over_used ? over.width : (int)uw,
                 over_used ? over.height : (int)uh, fmt, siz, &source, origin);
         }
-        tex_cache[slot] = (struct DkrTexCacheEntry){
-            .key = achieved,
-            .texture_id = tid, .upload_w = uw, .upload_h = uh,
-            .src_hash = now_hash, .valid = true };
+        {
+            const uint64_t phys_w = over_used ? (uint64_t)(unsigned)over.width : (uint64_t)uw;
+            const uint64_t phys_h = over_used ? (uint64_t)(unsigned)over.height : (uint64_t)uh;
+            uint64_t gpu_bytes = phys_w * phys_h * 4u;
+            if (key.mipmaps) {
+                gpu_bytes += gpu_bytes / 3u;
+            }
+#if defined(__vita__)
+            /* vitaGL now owns the pixels; the decoded copy in the mod store is
+             * dead weight (and was forcing evict/re-decode thrash under its
+             * 64 MiB cap). A later GPU eviction simply resolves it again. */
+            if (over_used) {
+                mdkr_mod_texture_release_pixels(over.rgba);
+                over.rgba = NULL;
+            }
+#endif
+            tex_cache[slot] = (struct DkrTexCacheEntry){
+                .key = achieved,
+                .texture_id = tid, .upload_w = uw, .upload_h = uh,
+                .src_hash = now_hash, .valid = true,
+                .last_use = ++tex_cache_use_clock,
+                .gpu_bytes = gpu_bytes,
+                .last_frame = dkr_frame_index,
+                .override_pending = rice_pending,
+                .pending_rice_crc = pending_crc };
+            tex_cache_gpu_bytes += gpu_bytes;
+        }
+        dkr_texcache_index_insert(slot);
+        dkr_texcache_enforce_budget(slot);
         hit = slot;
+        dkr_texcache_note_recent(unit, hit);
     } else {
-        gfx_rapi->select_texture(unit, tex_cache[hit].texture_id);
+        tex_cache[hit].last_use = ++tex_cache_use_clock;
+        tex_cache[hit].last_frame = dkr_frame_index;
         if (verify && tex_cache[hit].src_hash != now_hash) {
             gfx_dkr_texcache_stale_hits++;
             if (gfx_dkr_texcache_stale_hits <= 20) {
@@ -3251,6 +3651,13 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
     }
     const uint32_t texture_id = tex_cache[hit].texture_id;
     const bool texture_changed = rendering_state.bound_texture_id[unit] != texture_id;
+    if (was_hit && texture_changed) {
+        /* Polygon batches now survive across adjacent G_TRIN commands. Bind a
+         * different texture only after submitting geometry that names the old
+         * binding. Cache misses already flushed before upload above. */
+        gfx_flush();
+        gfx_rapi->select_texture(unit, texture_id);
+    }
     /*
      * Sampler policy follows the resolved entry, never the intent computed at
      * the top of this function: a derivation that failed and fell back holds
@@ -3289,6 +3696,9 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
         rendering_state.bound_texture_cms[unit] != cms ||
         rendering_state.bound_texture_cmt[unit] != cmt ||
         rendering_state.bound_texture_lod0[unit] != lod0) {
+        /* Sampler state belongs to the texture object in the GL backend. The
+         * queued batch must observe the previous filtering/wrap policy. */
+        gfx_flush();
         g_gfxSamplerLod0Only = lod0 ? 1 : 0;
         gfx_rapi->set_sampler_parameters(unit, linear, cms, cmt);
         g_gfxSamplerLod0Only = 0;
@@ -3312,7 +3722,10 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
 
 static void gfx_flush(void) {
     if (buf_vbo_len > 0) {
+        const uint64_t profile_started = mdkr_vita_profiler_metric_begin();
         gfx_rapi->draw_triangles(buf_vbo, buf_vbo_len, buf_vbo_num_tris);
+        mdkr_vita_profiler_metric_end(
+            MDKR_VP_METRIC_DRAW_SUBMIT_US, profile_started);
         buf_vbo_len = 0;
         buf_vbo_num_tris = 0;
     }
@@ -3336,6 +3749,8 @@ static struct {
     bool  use_fog;
     uint8_t tile_base;
     uint32_t tex_w[2], tex_h[2];
+    float tex_u_scale[2], tex_u_bias[2];
+    float tex_v_scale[2], tex_v_bias[2];
     int   num_inputs;
 } cur;
 
@@ -3431,15 +3846,36 @@ const char *gfx_dkr_rl5_active_arm_name(void) {
  * guard every glyph/logo strip samples at half scale (2x zoom → mangled text,
  * squished logo). */
 
-static void dkr_apply_tile_uv(float *u, float *v, const struct DkrTile *t) {
-    if (t->shifts) { if (t->shifts <= 10) *u /= (float)(1 << t->shifts);
-                     else *u *= (float)(1 << (16 - t->shifts)); }
-    if (t->shiftt) { if (t->shiftt <= 10) *v /= (float)(1 << t->shiftt);
-                     else *v *= (float)(1 << (16 - t->shiftt)); }
-    *u -= t->uls / 4.0f;
-    *v -= t->ult / 4.0f;
-    if (!dkr_in_texrect && !(rdp.other_mode_h & G_TP_PERSP)) { *u *= 0.5f; *v *= 0.5f; }
-    if ((rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT) { *u += 0.5f; *v += 0.5f; }
+static float dkr_tile_shift_scale(uint8_t shift) {
+    if (shift == 0) return 1.0f;
+    if (shift <= 10) return 1.0f / (float)(1u << shift);
+    return (float)(1u << (16u - shift));
+}
+
+static void dkr_update_uv_coefficients(int unit, uint8_t td) {
+    const struct DkrTile *tile = &rdp.tile[td];
+    const float rsp_s = rsp.tex_scale_s
+        ? (float)rsp.tex_scale_s / 65536.0f : 1.0f;
+    const float rsp_t = rsp.tex_scale_t
+        ? (float)rsp.tex_scale_t / 65536.0f : 1.0f;
+    const float perspective_scale =
+        (!dkr_in_texrect && !(rdp.other_mode_h & G_TP_PERSP)) ? 0.5f : 1.0f;
+    const float filter_bias =
+        (rdp.other_mode_h & (3U << G_MDSFT_TEXTFILT)) != G_TF_POINT
+            ? 0.5f : 0.0f;
+    const float inv_w = 1.0f / (float)(cur.tex_w[unit] ? cur.tex_w[unit] : 1u);
+    const float inv_h = 1.0f / (float)(cur.tex_h[unit] ? cur.tex_h[unit] : 1u);
+
+    cur.tex_u_scale[unit] =
+        (rsp_s / 32.0f) * dkr_tile_shift_scale(tile->shifts) *
+        perspective_scale * inv_w;
+    cur.tex_v_scale[unit] =
+        (rsp_t / 32.0f) * dkr_tile_shift_scale(tile->shiftt) *
+        perspective_scale * inv_h;
+    cur.tex_u_bias[unit] =
+        ((-(float)tile->uls / 4.0f) * perspective_scale + filter_bias) * inv_w;
+    cur.tex_v_bias[unit] =
+        ((-(float)tile->ult / 4.0f) * perspective_scale + filter_bias) * inv_h;
 }
 
 /*
@@ -3561,6 +3997,7 @@ static void dkr_update_clip_expansion(void) {
  * happens, which is harmless -- the next successful setup re-derives all of it.
  */
 static bool dkr_setup_draw_state(bool poly_tex_enabled) {
+    const uint64_t profile_started = mdkr_vita_profiler_metric_begin();
     /*
      * A draw-space matrix is decoded before its first primitive. That gives us
      * one exact boundary at which all queued world triangles can be flushed,
@@ -3652,8 +4089,9 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     cc_options |= gfx_rdp_interpolation_options(
         use_fog, dkr_rdp_gradient_legacy_enabled());
 
+    const uint64_t shader_lookup_started = mdkr_vita_profiler_metric_begin();
     struct ColorCombiner *comb = dkr_lookup_or_create_combiner(cc_id, cc_options);
-    gfx_cc_get_features(comb->shader_id0, comb->shader_id1, &cur.feat);
+    cur.feat = comb->feat;
     cur.comb = comb;
     cur.num_inputs = cur.feat.num_inputs;
     cur.use_fog = cur.feat.opt_fog;
@@ -3670,10 +4108,13 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
         comb->prg = dkr_lookup_or_create_shader(
             comb->shader_id0, comb->shader_id1);
     }
+    mdkr_vita_profiler_metric_end(
+        MDKR_VP_METRIC_SHADER_US, shader_lookup_started);
 
     /* A backend that could not build the program leaves the previously bound one
      * in place; the vtable takes no NULL program. */
     if (comb->prg != NULL && comb->prg != rendering_state.shader_program) {
+        const uint64_t shader_bind_started = mdkr_vita_profiler_metric_begin();
         gfx_flush();
         /* The attribute set differs per program; without the unload the arrays a
          * wider program enabled stay enabled and fetch past a narrower one's VBO
@@ -3681,6 +4122,8 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
         gfx_rapi->unload_shader(rendering_state.shader_program);
         gfx_rapi->load_shader(comb->prg);
         rendering_state.shader_program = comb->prg;
+        mdkr_vita_profiler_metric_end(
+            MDKR_VP_METRIC_SHADER_US, shader_bind_started);
     }
 
     /* Textures — bind whichever units the shader samples. */
@@ -3688,12 +4131,17 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
     for (int i = 0; i < 2; i++) {
         cur.tex_w[i] = 1; cur.tex_h[i] = 1;
         if (cur.feat.used_textures[i]) {
+            const uint64_t texture_bind_started =
+                mdkr_vita_profiler_metric_begin();
             uint8_t td = (uint8_t)(cur.tile_base + i);
             if (td >= 8) td = 0;
             uint32_t w = 1, h = 1;
             bind_ok[i] = dkr_bind_tile(i, td, texture_edge, &w, &h);
+            mdkr_vita_profiler_metric_end(
+                MDKR_VP_METRIC_TEXTURE_BIND_US, texture_bind_started);
             if (bind_ok[i]) {
                 cur.tex_w[i] = w; cur.tex_h[i] = h;
+                dkr_update_uv_coefficients(i, td);
             } else {
                 /* One line, once per process: a bind failure is a texture the
                  * backend could not produce (no loaded TMEM image, or a
@@ -3776,6 +4224,8 @@ static bool dkr_setup_draw_state(bool poly_tex_enabled) {
         gfx_rapi->set_blend_mode(blend_mode);
         rendering_state.blend_mode = blend_mode;
     }
+    mdkr_vita_profiler_metric_end(
+        MDKR_VP_METRIC_DRAW_STATE_US, profile_started);
     return bind_ok[0] && bind_ok[1];
 }
 
@@ -3928,15 +4378,8 @@ static void dkr_vbo_texcoord(const struct LoadedVertex *vtx, int ti, float *ou, 
      * the tile for the whole primitive (this is what rendered all menu text as
      * solid boxes and all textured geometry — terrain, sprites — as flat colour).
      * Treat a zero scale as unity (0x10000 == 1.0). */
-    float ss = rsp.tex_scale_s ? (rsp.tex_scale_s / 65536.0f) : 1.0f;
-    float st = rsp.tex_scale_t ? (rsp.tex_scale_t / 65536.0f) : 1.0f;
-    float u = vtx->u * ss / 32.0f;
-    float v = vtx->v * st / 32.0f;
-    uint8_t td = (uint8_t)(cur.tile_base + ti);
-    if (td >= 8) td = 0;
-    dkr_apply_tile_uv(&u, &v, &rdp.tile[td]);
-    *ou = u / (float)(cur.tex_w[ti] ? cur.tex_w[ti] : 1);
-    *ov = v / (float)(cur.tex_h[ti] ? cur.tex_h[ti] : 1);
+    *ou = vtx->u * cur.tex_u_scale[ti] + cur.tex_u_bias[ti];
+    *ov = vtx->v * cur.tex_v_scale[ti] + cur.tex_v_bias[ti];
 }
 
 /* Append one already-transformed triangle to the VBO in the exact attribute
@@ -3992,8 +4435,11 @@ static void dkr_emit_tri(const struct LoadedVertex *v0,
         }
     }
 
-    dkr_dbg_emitted++;
-    { /* count triangles that place any corner inside the NDC box */
+    if (dkr_trace_this_frame) {
+        dkr_dbg_emitted++;
+        /* Count triangles that place any corner inside the NDC box only for a
+         * requested diagnostic frame. Three perspective divides per emitted
+         * triangle are material work on Vita and served no production path. */
         int on = 0;
         for (int i = 0; i < 3; i++) {
             float w = vs[i]->w; if (w <= 0) continue;
@@ -4261,6 +4707,19 @@ static float dkr_ndc_cross(const struct LoadedVertex *a,
     float bx = b->x / bw, by = b->y / bw;
     float cx = c->x / cw, cy = c->y / cw;
     return (bx - ax) * (cy - ay) - (cx - ax) * (by - ay);
+}
+
+/* Return a value with the same SIGN as dkr_ndc_cross without performing six
+ * perspective divisions. Every production caller has already clipped to
+ * positive w, so the omitted denominator (a.w^2 * b.w * c.w) is positive. */
+static float dkr_homogeneous_winding(const struct LoadedVertex *a,
+                                     const struct LoadedVertex *b,
+                                     const struct LoadedVertex *c) {
+    const float abx = b->x * a->w - a->x * b->w;
+    const float aby = b->y * a->w - a->y * b->w;
+    const float acx = c->x * a->w - a->x * c->w;
+    const float acy = c->y * a->w - a->y * c->w;
+    return abx * acy - acx * aby;
 }
 
 /* ------------------------------------------------------------------------- */
@@ -4616,6 +5075,35 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
          * the plane becomes a quad; one entirely behind it disappears here (that
          * is the plane doing its job, not a cull). */
         {
+            const int clip_mode = dkr_clip_mode_get();
+            const bool fully_inside =
+                clip_mode == 0
+                    ? a.z + a.w >= 0.0f && b.z + b.w >= 0.0f &&
+                          c.z + c.w >= 0.0f
+                    : clip_mode == 1
+                        ? a.w >= 1.0e-5f && b.w >= 1.0e-5f &&
+                              c.w >= 1.0e-5f
+                        : false;
+
+            /* Almost every ordinary gameplay triangle is wholly in front of
+             * the near plane. The general Sutherland-Hodgman path copies three
+             * large LoadedVertex records into an input array, copies them again
+             * into its output array, and then walks that output to rediscover
+             * that nothing changed. Preserve the exact cull test and emitter,
+             * but bypass those copies for the common case. The experimental
+             * clipping-off mode deliberately retains its historical path. */
+            if (fully_inside && a.w > 0.0f && b.w > 0.0f && c.w > 0.0f) {
+                if (!(t->flags & BACKFACE_DRAW) &&
+                    dkr_homogeneous_winding(&a, &b, &c) < 0.0f) {
+                    culled++;
+                    continue;
+                }
+                dkr_emit_tri(&a, &b, &c);
+                emitted++;
+                continue;
+            }
+        }
+        {
             struct LoadedVertex tri[3];
             struct LoadedVertex poly[DKR_CLIP_MAX_VERTS];
             int pn, k;
@@ -4675,6 +5163,10 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
             if (!(t->flags & BACKFACE_DRAW)) {
                 float area = 0.0f;
                 for (k = 1; k + 1 < pn; k++) {
+                    /* Generated clip vertices can have different w values.
+                     * Their fan areas need the normalized magnitude before
+                     * summing; the division-free numerator is used only for
+                     * the overwhelmingly common uncut triangle above. */
                     area += dkr_ndc_cross(&poly[0], &poly[k], &poly[k + 1]);
                 }
                 if (area < 0.0f) {
@@ -4690,7 +5182,11 @@ static void dkr_sp_polygon(const Triangle *tris, int num_tris, bool tex_enabled,
     }
     if (dkr_trace_this_frame)
         DTRACE("  polygon: emitted=%d culled=%d oob=%d of %d", emitted, culled, oob, num_tris);
-    gfx_flush();
+    /* Keep compatible geometry queued across adjacent G_TRIN commands. Every
+     * backend-visible state mutation flushes at its ownership boundary, and
+     * gfx_run/gfx_end_frame provide the final frame boundary. The previous
+     * unconditional flush converted each small display-list polygon batch into
+     * a separate draw call even when shader, textures and fixed state matched. */
 }
 
 /* ------------------------------------------------------------------------- */
@@ -5281,6 +5777,9 @@ static void dkr_dp_load_tlut(uint8_t tile, uint32_t uls, uint32_t ult,
     }
     for (uint32_t i = 0; i < count; i++)
         rdp.palette[palofs + i] = ((uint16_t)src[i * 2] << 8) | src[i * 2 + 1];
+    if (count != 0u) {
+        dkr_palette_generation++;
+    }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -8337,12 +8836,16 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                     color_override != NULL);
             }
             if (v) {
+                const uint64_t vertex_started =
+                    mdkr_vita_profiler_metric_begin();
                 /* retained_n is the count the retained/override arrays were
                  * actually filled to; n is the display list's request. Passing n
                  * would transform whatever the stack held past that point. */
                 dkr_sp_vertex(
                     vertex_source, retained_n, append, position_override,
                     color_override);
+                mdkr_vita_profiler_metric_end(
+                    MDKR_VP_METRIC_VERTEX_TRANSFORM_US, vertex_started);
             }
             break;
         }
@@ -8395,8 +8898,12 @@ static void dkr_run_dl(Gfx *cmd, int depth, int limit) {
                 }
                 dkr_begin_primitive(
                     rsp.draw_space != G_MTX_DKR_SPACE_WORLD);
+                const uint64_t triangle_started =
+                    mdkr_vita_profiler_metric_begin();
                 dkr_sp_polygon(t, num_tris, tex, uv_offset_ptr, uv_mask_u,
                                uv_mask_v);
+                mdkr_vita_profiler_metric_end(
+                    MDKR_VP_METRIC_TRIANGLE_EMIT_US, triangle_started);
             }
             break;
         }
@@ -8951,6 +9458,14 @@ void gfx_reset_renderer_caches(void) {
      */
     memset(tex_cache, 0, sizeof(tex_cache));
     tex_cache_next = 0;
+    tex_cache_use_clock = 0;
+    tex_cache_gpu_bytes = 0;
+    tex_cache_index_initialized = false;
+    for (int unit = 0; unit < 2; unit++) {
+        for (int recent = 0; recent < DKR_TEXCACHE_RECENT_SIZE; recent++) {
+            tex_cache_recent[unit][recent] = -1;
+        }
+    }
     gfx_dkr_texture_ids_created = 0;
     gfx_dkr_texture_ids_deleted = 0;
     gfx_dkr_texture_ids_live = 0;
@@ -8959,6 +9474,7 @@ void gfx_reset_renderer_caches(void) {
     memset(&dkr_resource_generation, 0, sizeof(dkr_resource_generation));
     memset(cc_pool, 0, sizeof(cc_pool));
     cc_pool_size = 0;
+    cc_index_initialized = false;
     memset(&rendering_state, 0, sizeof(rendering_state));
     rendering_state.depth_mode = 0xFF;
     rendering_state.blend_mode = (enum GfxBlendMode)0xFF;
@@ -9498,6 +10014,10 @@ static bool gfx_dkr_replay_walk_impl(
     /* Start from bit-identical HLE state to the real walk, not from the state
      * the real walk left behind (see dkr_walk_entry_rdp). */
     memcpy(&rdp, dkr_walk_entry_rdp, sizeof(rdp));
+    /* The replay restored a palette snapshot that may differ from the live
+     * walk's final palette. Force the next CI bind to derive its key from the
+     * restored bytes rather than reuse the cached live-walk hash. */
+    dkr_palette_generation++;
     memcpy(&rsp, dkr_walk_entry_rsp, sizeof(rsp));
     memcpy(gfx_segment_table, retained_task.segments,
            sizeof(retained_task.segments));

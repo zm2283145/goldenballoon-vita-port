@@ -31,6 +31,12 @@
  */
 #include "mod_texture_store.h"
 #include "png_write_layout.h"
+#if defined(__vita__)
+/* Pure CPU chain construction (no GL); the decode helper runs it so the
+ * render thread only uploads. */
+#include "fast3d/gfx_mipgen.h"
+#include "fast3d/gfx_texture_edge.h"
+#endif
 
 #include <limits.h>
 #include <stdio.h>
@@ -47,6 +53,10 @@
  * The author-dump path below still writes files, and that is the only reason
  * fs_utf8 is included here at all. */
 #include "mod_source.h"
+#include "vita_profiler.h"
+#if defined(__vita__)
+#include <psp2/kernel/threadmgr.h>
+#endif
 #if defined(_WIN32)
 #include "fs_utf8.h"
 #endif
@@ -127,12 +137,18 @@ enum {
     SLOT_UNRESOLVED,
     SLOT_ABSENT,
     SLOT_REJECTED,
-    SLOT_RESIDENT
+    SLOT_RESIDENT,
+    /* Vita only: queued on the decode helper thread; pixels not yet here. */
+    SLOT_PENDING
 };
 
 typedef struct StoreSlot {
     char      digest[MDKR_MOD_TEXTURE_DIGEST_CHARS + 1];
     uint8_t  *rgba;
+    uint8_t  *mips;        /* worker-built levels 1..N-1, malloc'd, or NULL */
+    size_t    mip_bytes;
+    uint8_t  *cutout_mips; /* same, with the cutout coverage filter */
+    size_t    cutout_mip_bytes;
     int       width;
     int       height;
     size_t    bytes;
@@ -162,6 +178,30 @@ static size_t     s_resident_bytes;
 static int         s_rice_resident;
 static uint64_t   s_use_clock;
 static int        s_reports;
+
+/* ---------------------------------------------------- helper-thread state */
+
+#if defined(__vita__)
+/* One kernel mutex serialises pack I/O between the render thread's blocking
+ * paths and the decode helper: a zip source reads through one shared FILE*. */
+static SceUID s_io_lock = -1;
+static void store_io_lock(void) {
+    if (s_io_lock >= 0) sceKernelLockMutex(s_io_lock, 1, NULL);
+}
+/* Render thread: the helper can hold this mutex for a whole PNG read, and a
+ * frame must never wait on that (measured: 630 ms in one frame). */
+static int store_io_trylock(void) {
+    if (s_io_lock < 0) return 1;
+    return sceKernelTryLockMutex(s_io_lock, 1) >= 0;
+}
+static void store_io_unlock(void) {
+    if (s_io_lock >= 0) sceKernelUnlockMutex(s_io_lock, 1);
+}
+#else
+static void store_io_lock(void) {}
+static void store_io_unlock(void) {}
+static int store_io_trylock(void) { return 1; }
+#endif
 
 /* ------------------------------------------------------------- reporting */
 
@@ -233,6 +273,10 @@ static int table_grow(size_t capacity) {
             return 0;
         }
         fresh->rgba = old->rgba;
+        fresh->mips = old->mips;
+        fresh->mip_bytes = old->mip_bytes;
+        fresh->cutout_mips = old->cutout_mips;
+        fresh->cutout_mip_bytes = old->cutout_mip_bytes;
         fresh->width = old->width;
         fresh->height = old->height;
         fresh->bytes = old->bytes;
@@ -266,6 +310,16 @@ static StoreSlot *slot_for(const char *digest) {
 /* -------------------------------------------------------------- eviction */
 
 static void slot_release_pixels(StoreSlot *slot) {
+    free(slot->mips);
+    slot->mips = NULL;
+    s_resident_bytes -= slot->mip_bytes > s_resident_bytes ? s_resident_bytes
+                                                           : slot->mip_bytes;
+    slot->mip_bytes = 0;
+    free(slot->cutout_mips);
+    slot->cutout_mips = NULL;
+    s_resident_bytes -= slot->cutout_mip_bytes > s_resident_bytes
+                            ? s_resident_bytes : slot->cutout_mip_bytes;
+    slot->cutout_mip_bytes = 0;
     /* stbi_image_free, not free: the decoder's allocator is a compile-time
      * choice (STBI_MALLOC), and pairing its allocation with the wrong release
      * would only break on the day somebody sets it. */
@@ -281,7 +335,15 @@ static void slot_release_pixels(StoreSlot *slot) {
 /* Drops least-recently-used residents until `incoming` more bytes fit under the
  * cap. Returns 0 when even an empty cache could not hold it. */
 static int evict_for(size_t incoming) {
-    if (incoming > MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) return 0;
+    const uint64_t metric_started = mdkr_vita_profiler_metric_begin();
+    MdkrVitaProfileScope profile_scope;
+    int result = 1;
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_MOD_CACHE_EVICT,
+                                  &profile_scope);
+    if (incoming > MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) {
+        result = 0;
+        goto done;
+    }
 
     while (s_resident_bytes + incoming > MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) {
         StoreSlot *victim = NULL;
@@ -296,10 +358,18 @@ static int evict_for(size_t incoming) {
         }
         /* No resident left to drop, yet still over the cap: the accounting and
          * the cap disagree, which cannot happen, but returning beats looping. */
-        if (victim == NULL) return 0;
+        if (victim == NULL) {
+            result = 0;
+            goto done;
+        }
         slot_release_pixels(victim);
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_EVICTIONS, 1u);
     }
-    return 1;
+done:
+    mdkr_vita_profiler_zone_end(&profile_scope);
+    mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_CACHE_EVICT_US,
+                                  metric_started);
+    return result;
 }
 
 /* ------------------------------------------------------------ file access */
@@ -326,10 +396,13 @@ static FILE *store_open_write(const char *path) {
  * length is never allocated from on this path. */
 static unsigned char *read_pack_entry(MdkrModFile *file, size_t *out_size,
                                       const char **out_reason) {
+    const uint64_t metric_started = mdkr_vita_profiler_metric_begin();
+    MdkrVitaProfileScope profile_scope;
     unsigned char *buffer;
     size_t         size = 0;
     int            result;
 
+    mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_MOD_FILE_READ, &profile_scope);
     *out_size = 0;
     *out_reason = NULL;
 
@@ -337,31 +410,40 @@ static unsigned char *read_pack_entry(MdkrModFile *file, size_t *out_size,
     if (result != MDKR_MOD_SOURCE_BUFFER_TOO_SMALL &&
         result != MDKR_MOD_SOURCE_OK) {
         *out_reason = mdkr_mod_source_result_text(result);
-        return NULL;
+        goto fail;
     }
     if (size == 0) {
         *out_reason = "the file is empty";
-        return NULL;
+        goto fail;
     }
     if (size > MDKR_MOD_TEXTURE_FILE_BYTES_MAX) {
         *out_reason = "the file is too large to load";
-        return NULL;
+        goto fail;
     }
 
     buffer = (unsigned char *)malloc(size);
     if (buffer == NULL) {
         *out_reason = "there was not enough memory to load it";
-        return NULL;
+        goto fail;
     }
     result = mdkr_mod_source_read(file->source, file->relative, buffer, size,
                                   &size);
     if (result != MDKR_MOD_SOURCE_OK) {
         free(buffer);
         *out_reason = mdkr_mod_source_result_text(result);
-        return NULL;
+        goto fail;
     }
     *out_size = size;
+    mdkr_vita_profiler_zone_end(&profile_scope);
+    mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_FILE_READ_US,
+                                  metric_started);
     return buffer;
+
+fail:
+    mdkr_vita_profiler_zone_end(&profile_scope);
+    mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_FILE_READ_US,
+                                  metric_started);
+    return NULL;
 }
 
 /* ------------------------------------------------------------- resolution */
@@ -378,6 +460,10 @@ static unsigned char *read_pack_entry(MdkrModFile *file, size_t *out_size,
  * Returns stbi-owned pixels and their size, or NULL. `out_absent`, when given,
  * separates the ordinary "no pack holds this path" from a rejection whose
  * reason has already been reported against `key`. */
+/* Set when load_pack_png() declined because the decode helper held the I/O
+ * mutex; the caller must leave the slot unresolved and ask again later. */
+static int s_load_deferred;
+
 static unsigned char *load_pack_png(const char *relative, const char *key,
                                     int *out_width, int *out_height,
                                     int *out_absent) {
@@ -398,13 +484,20 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
      * time: most textures have no replacement, and probing first meant opening
      * (and for a zip, re-parsing the central directory) twice per resolve. */
     if (out_absent != NULL) *out_absent = 0;
+    s_load_deferred = 0;
+    if (!store_io_trylock()) {
+        s_load_deferred = 1;
+        return NULL;
+    }
     if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) {
+        store_io_unlock();
         if (out_absent != NULL) *out_absent = 1;
         return NULL;
     }
 
     file_bytes = read_pack_entry(&file, &file_size, &reason);
     mdkr_mod_registry_close_file(&file);
+    store_io_unlock();
     if (file_bytes == NULL) {
         report_rejection(key, reason);
         return NULL;
@@ -479,8 +572,17 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
         }
     }
 
-    pixels = stbi_load_from_memory(file_bytes, (int)file_size, &width, &height,
-                                   &channels, 4);
+    {
+        const uint64_t metric_started = mdkr_vita_profiler_metric_begin();
+        MdkrVitaProfileScope profile_scope;
+        mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_MOD_PNG_DECODE,
+                                      &profile_scope);
+        pixels = stbi_load_from_memory(file_bytes, (int)file_size, &width,
+                                       &height, &channels, 4);
+        mdkr_vita_profiler_zone_end(&profile_scope);
+        mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_PNG_DECODE_US,
+                                      metric_started);
+    }
     free(file_bytes);
     if (pixels == NULL) {
         /* stb's own wording, so the log names the actual defect in the PNG
@@ -503,6 +605,9 @@ static unsigned char *load_pack_png(const char *relative, const char *key,
 
     *out_width = width;
     *out_height = height;
+    mdkr_vita_profiler_counter_add(
+        MDKR_VP_COUNTER_MOD_DECODED_BYTES,
+        (uint64_t)(unsigned int)width * (uint64_t)(unsigned int)height * 4u);
     return pixels;
 }
 
@@ -518,6 +623,9 @@ static void slot_resolve(StoreSlot *slot) {
 
     snprintf(relative, sizeof relative, "textures/%s.png", slot->digest);
     pixels = load_pack_png(relative, slot->digest, &width, &height, &absent);
+    if (pixels == NULL && s_load_deferred) {
+        return; /* stays SLOT_UNRESOLVED; retried on a later bind */
+    }
     if (pixels == NULL) {
         /* Absent is the ordinary case and not a defect; anything else already
          * reported its reason inside the loader. */
@@ -635,6 +743,360 @@ static void slot_resolve_rice(StoreSlot *slot, uint32_t crc, int fmt, int siz) {
     if (!slot->counted) { slot->counted = 1; s_rice_resident++; }
 }
 
+
+/* ------------------------------------------------- Vita decode helper ---- */
+
+#if defined(__vita__)
+#define ASYNC_RING_MAX 512u
+/* Finished-but-not-yet-collected pixels the helper may hold before it waits
+ * for the render thread to catch up. */
+#define ASYNC_DONE_BYTES_MAX ((size_t)48u * 1024u * 1024u)
+#define ASYNC_WORKER_PRIORITY (0x10000100 + 20) /* below the game thread */
+#define ASYNC_WORKER_STACK 0x80000
+/* Both spare user cores. The game thread owns core 0; decoding a pack is
+ * embarrassingly parallel (one texture per job, no shared state beyond the
+ * queue and the I/O mutex), and throughput is what the player waits on. */
+#define ASYNC_WORKER_COUNT 2
+static const int k_async_worker_cpu[ASYNC_WORKER_COUNT] = {
+    0x00020000, /* user core 1 */
+    0x00040000  /* user core 2 */
+};
+
+typedef struct AsyncJob {
+    char        key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
+    const char *all, *rgb, *alpha;   /* registry-owned; see shutdown */
+    uint32_t    gen;
+} AsyncJob;
+
+typedef struct AsyncDone {
+    char     key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
+    uint8_t *rgba;
+    uint8_t *mips;
+    size_t   mip_bytes;
+    uint8_t *cutout_mips;
+    size_t   cutout_mip_bytes;
+    int      width, height;
+    uint32_t gen;
+    char     reason[160];
+} AsyncDone;
+
+static int       s_async_state;   /* 0 untried, 1 running, -1 unavailable */
+static SceUID    s_async_lock = -1;
+static SceUID    s_async_sema = -1;
+static SceUID    s_async_thread[ASYNC_WORKER_COUNT];
+static int       s_async_threads_started;
+static AsyncJob  s_jobs[ASYNC_RING_MAX];
+static unsigned  s_job_head, s_job_count;
+static AsyncDone s_done[ASYNC_RING_MAX];
+static unsigned  s_done_head, s_done_count;
+static size_t    s_done_bytes;
+static uint32_t  s_async_gen;
+static int       s_worker_busy;
+
+static void async_lock(void)   { sceKernelLockMutex(s_async_lock, 1, NULL); }
+static void async_unlock(void) { sceKernelUnlockMutex(s_async_lock, 1); }
+
+static void set_reason(char *dst, size_t cap, const char *text) {
+    snprintf(dst, cap, "%s", text != NULL ? text : "unusable");
+}
+
+/* Worker-side twin of load_pack_png(): same admission rules, no profiler
+ * calls and no logging (both belong to the render thread). */
+static unsigned char *worker_load_png(const char *relative, int *out_w,
+                                      int *out_h, char *reason, size_t cap) {
+    MdkrModFile    file;
+    unsigned char *bytes = NULL;
+    unsigned char *pixels;
+    size_t         size = 0;
+    int            result;
+    int dw = 0, dh = 0, dc = 0, w = 0, h = 0, ch = 0;
+
+    store_io_lock();
+    if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) {
+        store_io_unlock();
+        set_reason(reason, cap, "the pack file it names could not be opened");
+        return NULL;
+    }
+    result = mdkr_mod_source_read(file.source, file.relative, NULL, 0, &size);
+    if ((result == MDKR_MOD_SOURCE_BUFFER_TOO_SMALL ||
+         result == MDKR_MOD_SOURCE_OK) &&
+        size > 0 && size <= MDKR_MOD_TEXTURE_FILE_BYTES_MAX) {
+        bytes = (unsigned char *)malloc(size);
+        if (bytes != NULL &&
+            mdkr_mod_source_read(file.source, file.relative, bytes, size,
+                                 &size) != MDKR_MOD_SOURCE_OK) {
+            free(bytes);
+            bytes = NULL;
+        }
+    }
+    mdkr_mod_registry_close_file(&file);
+    store_io_unlock();
+    if (bytes == NULL) {
+        set_reason(reason, cap, "the file could not be read");
+        return NULL;
+    }
+    if (stbi_info_from_memory(bytes, (int)size, &dw, &dh, &dc) == 0 ||
+        dw <= 0 || dh <= 0 ||
+        dw > MDKR_MOD_TEXTURE_DIMENSION_MAX ||
+        dh > MDKR_MOD_TEXTURE_DIMENSION_MAX ||
+        (uint64_t)dw * (uint64_t)dh * 4u >
+            (uint64_t)MDKR_MOD_TEXTURE_CACHE_BYTES_MAX) {
+        free(bytes);
+        set_reason(reason, cap,
+                   "the image header is invalid or larger than the Vita limit");
+        return NULL;
+    }
+    pixels = stbi_load_from_memory(bytes, (int)size, &w, &h, &ch, 4);
+    free(bytes);
+    if (pixels == NULL || w != dw || h != dh) {
+        if (pixels != NULL) stbi_image_free(pixels);
+        set_reason(reason, cap, "the PNG could not be decoded");
+        return NULL;
+    }
+    *out_w = w;
+    *out_h = h;
+    return pixels;
+}
+
+static void worker_decode(const AsyncJob *job, AsyncDone *done) {
+    int w = 0, h = 0;
+    unsigned char *pixels = NULL;
+
+    if (job->all != NULL) {
+        pixels = worker_load_png(job->all, &w, &h, done->reason,
+                                 sizeof done->reason);
+    } else if (job->rgb != NULL) {
+        pixels = worker_load_png(job->rgb, &w, &h, done->reason,
+                                 sizeof done->reason);
+        if (pixels != NULL) {
+            int aw = 0, ah = 0;
+            char ignored[8];
+            unsigned char *alpha = job->alpha == NULL ? NULL :
+                worker_load_png(job->alpha, &aw, &ah, ignored, sizeof ignored);
+            const size_t count = (size_t)w * (size_t)h;
+            size_t i;
+            if (alpha != NULL && aw == w && ah == h) {
+                for (i = 0; i < count; ++i) pixels[i * 4u + 3u] = alpha[i * 4u];
+            } else {
+                for (i = 0; i < count; ++i) pixels[i * 4u + 3u] = 255u;
+            }
+            if (alpha != NULL) stbi_image_free(alpha);
+        }
+    }
+    done->rgba = (uint8_t *)pixels;
+    done->width = w;
+    done->height = h;
+    done->mips = NULL;
+    done->mip_bytes = 0;
+    done->cutout_mips = NULL;
+    done->cutout_mip_bytes = 0;
+    if (pixels != NULL && gfx_mip_level_count(w, h) > 1) {
+        /* The expensive half of an HD upload: an exact-area box filtered in
+         * linear light (and, for cutouts, a coverage pass). Measured at ~77 ms
+         * per 512x512 replacement on the render thread; here it costs the
+         * player nothing. */
+        size_t need = gfx_mip_chain_bytes(w, h);
+        uint8_t *scratch = need > 0 ? (uint8_t *)malloc(need) : NULL;
+        GfxMipChain chain;
+        if (scratch != NULL &&
+            gfx_mip_build(pixels, w, h, scratch, need, &chain)) {
+            done->mips = scratch;
+            done->mip_bytes = need;
+        } else {
+            free(scratch);
+        }
+        /* The cutout variant is NOT built here. Its coverage-preserving pass
+         * walks each level ~32 times, which roughly halved decode throughput
+         * on the helper threads and made HD textures arrive visibly slower.
+         * Cutout tiles reuse the ordinary chain: the only difference is how
+         * much alpha survives in distant mips, and paying for a second chain
+         * on every texture to refine that is the wrong trade on this device. */
+    }
+}
+
+static int async_worker(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    for (;;) {
+        AsyncJob  job;
+        AsyncDone done;
+        int       have = 0;
+
+        if (sceKernelWaitSema(s_async_sema, 1, NULL) < 0) continue;
+        async_lock();
+        if (s_job_count > 0) {
+            job = s_jobs[s_job_head];
+            s_job_head = (s_job_head + 1u) % ASYNC_RING_MAX;
+            s_job_count--;
+            s_worker_busy++;   /* count, not flag: several helpers now */
+            have = 1;
+        }
+        async_unlock();
+        if (!have) continue;
+
+        /* Backpressure: do not pile up decoded pixels the render thread has
+         * not collected (e.g. while a menu is up and nothing is bound). */
+        for (;;) {
+            int wait;
+            async_lock();
+            wait = s_done_bytes > ASYNC_DONE_BYTES_MAX && job.gen == s_async_gen;
+            async_unlock();
+            if (!wait) break;
+            sceKernelDelayThread(4000);
+        }
+
+        memset(&done, 0, sizeof done);
+        memcpy(done.key, job.key, sizeof done.key);
+        done.gen = job.gen;
+        worker_decode(&job, &done);
+
+        async_lock();
+        if (job.gen == s_async_gen && s_done_count < ASYNC_RING_MAX) {
+            s_done[(s_done_head + s_done_count) % ASYNC_RING_MAX] = done;
+            s_done_count++;
+            if (done.rgba != NULL) {
+                s_done_bytes += (size_t)done.width * (size_t)done.height * 4u;
+            }
+            done.rgba = NULL;
+        }
+        if (s_worker_busy > 0) s_worker_busy--;
+        async_unlock();
+        if (done.rgba != NULL) { /* stale or full */
+            stbi_image_free(done.rgba);
+            free(done.mips);
+            free(done.cutout_mips);
+        }
+    }
+    return 0;
+}
+
+static int async_start(void) {
+    if (s_async_state != 0) return s_async_state > 0;
+    s_async_state = -1;
+    if (s_io_lock < 0) {
+        s_io_lock = sceKernelCreateMutex("mdkr pack io", 0, 0, NULL);
+        if (s_io_lock < 0) return 0;
+    }
+    s_async_lock = sceKernelCreateMutex("mdkr pack queue", 0, 0, NULL);
+    s_async_sema = sceKernelCreateSema("mdkr pack jobs", 0, 0,
+                                       (int)ASYNC_RING_MAX, NULL);
+    if (s_async_lock < 0 || s_async_sema < 0) return 0;
+    for (int i = 0; i < ASYNC_WORKER_COUNT; i++) {
+        char name[32];
+        snprintf(name, sizeof name, "mdkr pack decode %d", i);
+        s_async_thread[i] = sceKernelCreateThread(name, async_worker,
+                                                  ASYNC_WORKER_PRIORITY,
+                                                  ASYNC_WORKER_STACK, 0,
+                                                  k_async_worker_cpu[i], NULL);
+        if (s_async_thread[i] < 0) break;
+        if (sceKernelStartThread(s_async_thread[i], 0, NULL) < 0) break;
+        s_async_threads_started++;
+    }
+    if (s_async_threads_started == 0) return 0;
+    s_async_state = 1;
+    fprintf(stderr, "[MODS] %d texture decode helper thread(s) started\n",
+            s_async_threads_started);
+    return 1;
+}
+
+/* Render thread: adopt finished decodes into their slots. */
+static void async_pump(void) {
+    AsyncDone batch[32];
+    unsigned  n = 0, i;
+
+    if (s_async_state <= 0) return;
+    async_lock();
+    while (s_done_count > 0 && n < 32u) {
+        batch[n] = s_done[s_done_head];
+        s_done_head = (s_done_head + 1u) % ASYNC_RING_MAX;
+        s_done_count--;
+        if (batch[n].rgba != NULL) {
+            size_t b = (size_t)batch[n].width * (size_t)batch[n].height * 4u;
+            s_done_bytes = s_done_bytes >= b ? s_done_bytes - b : 0u;
+        }
+        n++;
+    }
+    async_unlock();
+
+    for (i = 0; i < n; i++) {
+        AsyncDone *done = &batch[i];
+        StoreSlot *slot;
+        size_t     bytes;
+        if (done->gen != s_async_gen) {
+            if (done->rgba != NULL) stbi_image_free(done->rgba);
+            free(done->mips);
+            free(done->cutout_mips);
+            continue;
+        }
+        slot = slot_for(done->key);
+        if (slot == NULL || slot->state != SLOT_PENDING) {
+            if (done->rgba != NULL) stbi_image_free(done->rgba);
+            free(done->mips);
+            free(done->cutout_mips);
+            continue;
+        }
+        if (done->rgba == NULL) {
+            slot->state = SLOT_REJECTED;
+            report_rejection(slot->digest, done->reason);
+            continue;
+        }
+        bytes = (size_t)done->width * (size_t)done->height * 4u;
+        if (!evict_for(bytes + done->mip_bytes + done->cutout_mip_bytes)) {
+            stbi_image_free(done->rgba);
+            free(done->mips);
+            free(done->cutout_mips);
+            slot->state = SLOT_REJECTED;
+            report_rejection(slot->digest,
+                             "the image is larger than the whole texture cache");
+            continue;
+        }
+        slot->mips = done->mips;
+        slot->mip_bytes = done->mip_bytes;
+        slot->cutout_mips = done->cutout_mips;
+        slot->cutout_mip_bytes = done->cutout_mip_bytes;
+        s_resident_bytes += done->mip_bytes + done->cutout_mip_bytes;
+        slot->rgba = done->rgba;
+        slot->width = done->width;
+        slot->height = done->height;
+        slot->bytes = bytes;
+        slot->state = SLOT_RESIDENT;
+        s_resident_bytes += bytes;
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_DECODED_BYTES,
+                                       (uint64_t)bytes);
+        if (!slot->counted) { slot->counted = 1; s_rice_resident++; }
+    }
+}
+
+/* Drop queued/finished work and wait for an in-flight decode to finish, so
+ * the registry (whose strings jobs borrow) can be released safely. */
+static void async_reset(void) {
+    unsigned tries = 0;
+    if (s_async_state <= 0) return;
+    async_lock();
+    s_async_gen++;
+    s_job_head = s_job_count = 0;
+    while (s_done_count > 0) {
+        if (s_done[s_done_head].rgba != NULL) {
+            stbi_image_free(s_done[s_done_head].rgba);
+        }
+        free(s_done[s_done_head].mips);
+        free(s_done[s_done_head].cutout_mips);
+        s_done_head = (s_done_head + 1u) % ASYNC_RING_MAX;
+        s_done_count--;
+    }
+    s_done_bytes = 0;
+    async_unlock();
+    for (;;) {
+        int busy;
+        async_lock();
+        busy = s_worker_busy;
+        async_unlock();
+        if (!busy || ++tries > 5000u) break;
+        sceKernelDelayThread(1000);
+    }
+}
+#endif /* __vita__ */
+
 /* ------------------------------------------------------------------- API */
 
 void mdkr_mod_texture_store_init(const MdkrModRegistry *registry) {
@@ -656,6 +1118,10 @@ void mdkr_mod_texture_store_init(const MdkrModRegistry *registry) {
 void mdkr_mod_texture_store_shutdown(void) {
     size_t index;
 
+#if defined(__vita__)
+    async_reset();
+#endif
+
     /* Indexing a pack and USING it are different claims. This is the second
      * one, and it is the only number that proves a texture actually reached
      * the GPU through the override path this run. */
@@ -668,6 +1134,8 @@ void mdkr_mod_texture_store_shutdown(void) {
 
     for (index = 0; index < s_slot_capacity; index++) {
         stbi_image_free(s_slots[index].rgba);
+        free(s_slots[index].mips);
+        free(s_slots[index].cutout_mips);
     }
     free(s_slots);
     s_slots = NULL;
@@ -689,6 +1157,7 @@ bool mdkr_mod_texture_store_active(void) {
 }
 
 static int texture_lookup_exact(const char *digest_hex, MdkrModTexture *out) {
+    uint64_t metric_started;
     StoreSlot *slot;
 
     if (out != NULL) {
@@ -701,16 +1170,36 @@ static int texture_lookup_exact(const char *digest_hex, MdkrModTexture *out) {
     /* Anything that is not a digest this store names cannot have a file, and
      * letting it through would let a caller's bug become a filesystem probe. */
     if (strlen(digest_hex) != MDKR_MOD_TEXTURE_DIGEST_CHARS) return 0;
+    metric_started = mdkr_vita_profiler_metric_begin();
 
     slot = slot_for(digest_hex);
-    if (slot == NULL) return 0;
-    if (slot->state == SLOT_UNRESOLVED) slot_resolve(slot);
-    if (slot->state != SLOT_RESIDENT) return 0;
+    if (slot == NULL) {
+        mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_LOOKUP_US,
+                                      metric_started);
+        return 0;
+    }
+    if (slot->state == SLOT_UNRESOLVED) {
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESOLVES, 1u);
+        slot_resolve(slot);
+    } else if (slot->state == SLOT_RESIDENT) {
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESIDENT_HITS, 1u);
+    }
+    if (slot->state != SLOT_RESIDENT) {
+        mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_LOOKUP_US,
+                                      metric_started);
+        return 0;
+    }
 
     slot->last_use = ++s_use_clock;
     out->rgba = slot->rgba;
     out->width = slot->width;
     out->height = slot->height;
+    out->mips = slot->mips;
+    out->mip_bytes = slot->mip_bytes;
+    out->cutout_mips = slot->cutout_mips;
+    out->cutout_mip_bytes = slot->cutout_mip_bytes;
+    mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_LOOKUP_US,
+                                  metric_started);
     return 1;
 }
 
@@ -730,34 +1219,152 @@ int mdkr_mod_texture_lookup(const char *digest_hex, MdkrModTexture *out) {
 
 int mdkr_mod_texture_rice_resident(void) { return s_rice_resident; }
 
+void mdkr_mod_texture_release_pixels(const uint8_t *rgba) {
+    size_t index;
+    if (rgba == NULL || s_slots == NULL) return;
+    for (index = 0; index < s_slot_capacity; index++) {
+        StoreSlot *slot = &s_slots[index];
+        if (slot->state == SLOT_RESIDENT && slot->rgba == rgba) {
+            slot_release_pixels(slot);
+            return;
+        }
+    }
+}
+
 int mdkr_mod_texture_rice_active(void) {
     return mdkr_mod_texture_store_active() && s_rice_identities > 0;
 }
 
 int mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
                                  MdkrModTexture *out) {
+    uint64_t metric_started;
     char       key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
     StoreSlot *slot;
 
     if (out != NULL) { out->rgba = NULL; out->width = 0; out->height = 0; }
     if (!mdkr_mod_texture_store_active()) return 0;
     if (s_rice_identities == 0) return 0;
+    metric_started = mdkr_vita_profiler_metric_begin();
 
     /* The slot table is keyed by string, so a Rice identity gets one that
      * cannot collide with a 32-character content digest. */
     snprintf(key, sizeof key, "rice:%08x:%d:%d", (unsigned)crc, fmt, siz);
     slot = slot_for(key);
-    if (slot == NULL) return 0;
-    if (slot->state == SLOT_UNRESOLVED) slot_resolve_rice(slot, crc, fmt, siz);
-    if (slot->state != SLOT_RESIDENT) return 0;
+    if (slot == NULL) {
+        mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_LOOKUP_US,
+                                      metric_started);
+        return 0;
+    }
+    if (slot->state == SLOT_UNRESOLVED) {
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESOLVES, 1u);
+        slot_resolve_rice(slot, crc, fmt, siz);
+    } else if (slot->state == SLOT_RESIDENT) {
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESIDENT_HITS, 1u);
+    }
+    if (slot->state != SLOT_RESIDENT) {
+        mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_LOOKUP_US,
+                                      metric_started);
+        return 0;
+    }
 
     slot->last_use = ++s_use_clock;
     if (out != NULL) {
         out->rgba = slot->rgba;
         out->width = slot->width;
         out->height = slot->height;
+        out->mips = slot->mips;
+        out->mip_bytes = slot->mip_bytes;
+        out->cutout_mips = slot->cutout_mips;
+        out->cutout_mip_bytes = slot->cutout_mip_bytes;
     }
+    mdkr_vita_profiler_metric_end(MDKR_VP_METRIC_MOD_LOOKUP_US,
+                                  metric_started);
     return 1;
+}
+
+int mdkr_mod_texture_lookup_rice_async(uint32_t crc, int fmt, int siz,
+                                       MdkrModTexture *out) {
+#if defined(__vita__)
+    char                      key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
+    StoreSlot                *slot;
+    const MdkrModRiceTexture *found;
+    int                       queued = 0;
+
+    if (out != NULL) { out->rgba = NULL; out->width = 0; out->height = 0; }
+    if (!mdkr_mod_texture_store_active() || s_rice_identities == 0) return 0;
+    if (!async_start()) return mdkr_mod_texture_lookup_rice(crc, fmt, siz, out);
+    async_pump();
+
+    snprintf(key, sizeof key, "rice:%08x:%d:%d", (unsigned)crc, fmt, siz);
+    slot = slot_for(key);
+    if (slot == NULL) return 0;
+    switch (slot->state) {
+    case SLOT_RESIDENT:
+        mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESIDENT_HITS, 1u);
+        slot->last_use = ++s_use_clock;
+        if (out != NULL) {
+            out->rgba = slot->rgba;
+            out->width = slot->width;
+            out->height = slot->height;
+            out->mips = slot->mips;
+            out->mip_bytes = slot->mip_bytes;
+            out->cutout_mips = slot->cutout_mips;
+            out->cutout_mip_bytes = slot->cutout_mip_bytes;
+        }
+        return 1;
+    case SLOT_PENDING:
+        return 2;
+    case SLOT_ABSENT:
+    case SLOT_REJECTED:
+        return 0;
+    default:
+        break;
+    }
+
+    found = mdkr_mod_registry_rice_lookup(s_registry, crc, fmt, siz);
+    if (found == NULL) {
+        slot->state = SLOT_ABSENT;
+        return 0;
+    }
+    if (found->all == NULL && found->rgb == NULL) {
+        /* Let the blocking resolver apply its existing rejection wording. */
+        return mdkr_mod_texture_lookup_rice(crc, fmt, siz, out);
+    }
+    mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESOLVES, 1u);
+    async_lock();
+    if (s_job_count < ASYNC_RING_MAX) {
+        AsyncJob *job = &s_jobs[(s_job_head + s_job_count) % ASYNC_RING_MAX];
+        memcpy(job->key, key, sizeof job->key);
+        job->all = found->all;
+        job->rgb = found->rgb;
+        job->alpha = found->alpha;
+        job->gen = s_async_gen;
+        s_job_count++;
+        queued = 1;
+    }
+    async_unlock();
+    if (!queued) return mdkr_mod_texture_lookup_rice(crc, fmt, siz, out);
+    slot->state = SLOT_PENDING;
+    sceKernelSignalSema(s_async_sema, 1);
+    return 2;
+#else
+    return mdkr_mod_texture_lookup_rice(crc, fmt, siz, out);
+#endif
+}
+
+int mdkr_mod_texture_rice_pending(uint32_t crc, int fmt, int siz) {
+#if defined(__vita__)
+    char       key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
+    StoreSlot *slot;
+    if (s_async_state <= 0 || s_slots == NULL) return 0;
+    async_pump();
+    snprintf(key, sizeof key, "rice:%08x:%d:%d", (unsigned)crc, fmt, siz);
+    slot = slot_for(key);
+    return slot != NULL && slot->state == SLOT_PENDING;
+#else
+    (void)crc; (void)fmt; (void)siz;
+    return 0;
+#endif
 }
 
 void mdkr_mod_texture_set_enabled(bool enabled) {

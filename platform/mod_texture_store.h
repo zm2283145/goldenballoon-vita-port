@@ -54,6 +54,17 @@ extern "C" {
 #endif
 
 typedef struct MdkrModTexture {
+    /* Vita: mip levels 1..N-1 for `rgba`, already filtered by the decode
+     * helper thread (levels are laid out exactly as gfx_mip_build writes
+     * them; describe them with gfx_mip_chain_layout). NULL when the platform
+     * builds its own chain or the texture has only one level. Owned by the
+     * store and valid for exactly as long as `rgba` is. */
+    const uint8_t *mips;
+    size_t mip_bytes;
+    /* Same chain built with the coverage-preserving cutout filter, for tiles
+     * the renderer binds as alpha cutouts. NULL when unavailable. */
+    const uint8_t *cutout_mips;
+    size_t cutout_mip_bytes;
     /* Store-owned RGBA8, tightly packed, `width * height * 4` bytes.
      *
      * Valid until the next mdkr_mod_texture_lookup() or
@@ -98,12 +109,30 @@ int  mdkr_mod_texture_lookup_rice(uint32_t crc, int fmt, int siz,
  * "the pack is being used", and worth being able to state separately. */
 int  mdkr_mod_texture_rice_resident(void);
 
+/* Drops the decoded pixels a lookup returned, once the caller has uploaded
+ * them. The identity stays known (a later lookup decodes it again), so this
+ * never turns a hit into a miss -- it only stops the store holding a second
+ * copy of pixels the GPU already owns. `rgba` must be a pointer a lookup
+ * returned; anything else (including NULL) is ignored. */
+void mdkr_mod_texture_release_pixels(const uint8_t *rgba);
+
 /* 1 when an ENABLED Rice pack is installed. The renderer tests this before
  * computing a Rice key, because that key is a full pass over the texture's
  * source bytes: without the test, every player with only digest-keyed packs
  * (or only a dump running) pays a second hash of every new texture for a
  * lookup that cannot succeed. */
 int  mdkr_mod_texture_rice_active(void);
+
+/* Non-blocking Rice lookup. Returns 1 and fills `out` when the replacement is
+ * decoded and ready, 0 when no usable replacement exists, and 2 when a helper
+ * thread is decoding it (the caller should draw the original texture for now
+ * and ask again later). On platforms without the helper thread this is the
+ * blocking mdkr_mod_texture_lookup_rice() and never returns 2. */
+int  mdkr_mod_texture_lookup_rice_async(uint32_t crc, int fmt, int siz,
+                                        MdkrModTexture *out);
+/* 1 while that identity is still being decoded; 0 once it is ready, failed,
+ * or was never queued. Also collects finished work from the helper thread. */
+int  mdkr_mod_texture_rice_pending(uint32_t crc, int fmt, int siz);
 
 /* True when a lookup could possibly succeed: overrides on, a registry bound,
  * and at least one enabled pack in it. The renderer tests this before hashing

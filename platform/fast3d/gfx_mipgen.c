@@ -318,6 +318,36 @@ static void preserve_alpha_coverage(uint8_t *rgba, int width, int height,
     }
 }
 
+bool gfx_mip_chain_layout(const uint8_t *src_rgba, int width, int height,
+                          const uint8_t *scratch, size_t scratch_bytes,
+                          GfxMipChain *out) {
+    const uint8_t *cursor = scratch;
+    size_t used = 0;
+    int levels;
+    int w = width;
+    int h = height;
+
+    if (src_rgba == NULL || scratch == NULL || out == NULL) return false;
+    levels = gfx_mip_level_count(width, height);
+    if (levels <= 0) return false;
+    if (scratch_bytes < gfx_mip_chain_bytes(width, height)) return false;
+
+    out->level_count = levels;
+    out->width[0] = width;
+    out->height[0] = height;
+    out->level[0] = src_rgba;
+    for (int l = 1; l < levels; l++) {
+        w = next_dim(w);
+        h = next_dim(h);
+        out->width[l] = w;
+        out->height[l] = h;
+        out->level[l] = cursor;
+        used = (size_t)w * (size_t)h * 4u;
+        cursor += used;
+    }
+    return true;
+}
+
 static bool gfx_mip_build_mode(const uint8_t *src_rgba, int width, int height,
                                uint8_t *scratch, size_t scratch_bytes,
                                uint8_t alpha_threshold, GfxMipMode mode,

@@ -89,6 +89,17 @@ bool gfx_mip_build(const uint8_t *src_rgba, int width, int height,
                    uint8_t *scratch, size_t scratch_bytes,
                    GfxMipChain *out);
 
+/*
+ * Rebuild the GfxMipChain description (level count, dimensions, pointers) for
+ * a chain some earlier gfx_mip_build() already wrote into `scratch`, without
+ * filtering anything. Level layout inside the scratch is deterministic, so a
+ * chain built on a worker thread can be handed to the uploader as bytes plus
+ * its source dimensions. Returns false on bad arguments or short scratch.
+ */
+bool gfx_mip_chain_layout(const uint8_t *src_rgba, int width, int height,
+                          const uint8_t *scratch, size_t scratch_bytes,
+                          GfxMipChain *out);
+
 /* Data textures (metallic/roughness and occlusion) are already linear bytes;
  * applying the sRGB transfer used for albedo would bias their material values. */
 bool gfx_mip_build_linear(const uint8_t *src_rgba, int width, int height,
