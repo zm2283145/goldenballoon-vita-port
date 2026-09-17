@@ -235,7 +235,14 @@ static int rice_parse_name(const char *rel, uint32_t *out_crc, int *out_fmt,
         if (*p == '/' || *p == '\\') base = p + 1;
     }
     dot = strrchr(base, '.');
-    if (dot == NULL || ascii_casecmp(dot, ".png") != 0) return 0;
+    /* .vtex is this port's offline-converted texture: raw RGBA8 with its mip
+     * chain already built, so the Vita neither inflates a PNG nor filters a
+     * chain at run time. Same Rice naming, so the identity parse below is
+     * unchanged. */
+    if (dot == NULL || (ascii_casecmp(dot, ".png") != 0 &&
+                        ascii_casecmp(dot, ".vtex") != 0)) {
+        return 0;
+    }
 
     /* Walk the fields FORWARD from the texture CRC rather than counting '#'
      * from the end. Both shapes the format uses are then the same parse:

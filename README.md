@@ -31,10 +31,19 @@
 > **Status update (1.7.1):** the Restored visual preset is stable and a complete
 > Adventure playthrough has been confirmed on real Vita hardware. The port
 > boots, loads a ROM, renders 3D races and menus, saves progress, and includes
-> a 98-trophy pack. The optional
-> Remastered visual preset remains unsupported; use Restored (the default).
-> The magic-code-gated Save Editor provides a supported way to test and repair
-> Vita save progression.
+> a 98-trophy pack. The magic-code-gated Save Editor provides a supported way
+> to test and repair Vita save progression.
+>
+> **The Remastered preset no longer crashes at startup.** Its post-processing
+> program was desktop-only GLSL that the Vita's shader compiler rejected, and
+> the rejection left that compiler unusable for every shader after it. Vita
+> builds now skip that program, so Remastered boots and runs — without the
+> post effects (tonemap, bloom, FXAA, SSAO) and per-pixel lighting the Vita
+> cannot render anyway. Restored remains the default and the recommended look.
+>
+> **High-resolution texture packs are supported on Vita**, including a
+> converter that prepares a pack for the handheld. See
+> [Custom content](#custom-content).
 
 ## Quick start (PS Vita)
 
@@ -117,10 +126,11 @@ apply too where they overlap. See [PORTING_STATUS.md](PORTING_STATUS.md) for
 the full, continuously-updated table (it also tracks every crash bug found
 and fixed so far, with root causes).
 
-- **Remastered visual preset crashes on startup — use Restored (default).**
-  This is a known, actively-investigated issue with no fix yet; see
-  [PORTING_STATUS.md's Known issues section](PORTING_STATUS.md#known-issues)
-  for what's been ruled out so far.
+- **Remastered preset runs, but is not the full Remastered look.** Its
+  screen-space post effects (tonemapping, bloom, FXAA, SSAO) and RL-5
+  per-pixel lighting are compiled out or disabled on Vita, because vitaGL and
+  the Vita's shader compiler cannot take the programs they need. Grading, SDF
+  text and the rest of the preset do apply. Restored stays the default.
 - **No ROM picker.** The ROM must sit at the fixed path
   `ux0:data/goldenballoon/baserom.us.v80.z64`; only US v1.0 has been tried.
 - **No WebGPU, no online play, no Phone Party, no sun-shadow mapping, no
@@ -184,6 +194,15 @@ saves the last two. Each binding can be cleared separately, and **Reset to
 Default Controls** atomically restores the shipped layout. The screen supports
 D-pad navigation and blocks its input from reaching the menu or game behind it.
 
+## PS Vita performance defaults
+
+Vita builds render at the handheld's native 960x544 with 2x anisotropic
+filtering in both the Restored and Remastered presets. The desktop presets ask
+for 2x supersampling (four times the pixels) and 8x/16x anisotropy, which the
+SGX543 cannot afford. Both values remain adjustable, and an existing
+`mdkr64.ini` keeps whatever you already chose — delete the `RenderScale` and
+`AnisotropicFiltering` lines to pick up the new defaults.
+
 ## PS Vita shader cache and performance
 
 The Vita renderer stores validated compiled shader binaries in
@@ -201,7 +220,38 @@ is needed—the game will rebuild it during subsequent play.
 Golden Balloon supports replacing textures and music via `mods/` and a
 `pack.ini` — see the
 [upstream README](https://github.com/akratch/goldenballoon#custom-content)
-and [docs/MODDING.md](docs/MODDING.md). This has not been exercised on Vita.
+and [docs/MODDING.md](docs/MODDING.md).
+
+**High-resolution texture packs work on Vita.** Drop a Rice/GLideN64 pack —
+the `.zip` or the folder — into `ux0:data/goldenballoon/mods/` and start the
+game; a zipped pack is unpacked on the Vita with a progress screen the first
+time. `Content.PacksEnabled` in `ux0:data/goldenballoon/mdkr64.ini` turns all
+packs on and off, and `Content.PackDisabled` takes a comma-separated list of
+pack names to skip, so several packs can sit in `mods/` with only the ones you
+want active.
+
+A stock desktop pack is heavy for the handheld: its textures are decoded,
+mip-chained and uploaded on the Vita, and non-power-of-two images get no
+mipmaps there at all. `tools/ricepack/vita_optimize_pack.py` prepares one on a
+PC first:
+
+```sh
+# Smaller PNG pack: merged _rgb/_a halves, power-of-two, capped side length.
+python tools/ricepack/vita_optimize_pack.py "SR.GU pack" "SR.GU pack Vita" --max-size 512
+
+# Or the Vita-native container: raw pixels with the mip chain already built,
+# so the handheld neither inflates a PNG nor filters a chain at run time.
+python tools/ricepack/vita_optimize_pack.py "SR.GU pack" "SR.GU pack Vita" --max-size 256 --format vtex
+```
+
+Both outputs keep the pack's own file names and folders, so the game
+recognises them like any other Rice pack. `.vtex` files load fastest and are
+the recommended form on Vita; they are also considerably larger on the memory
+card.
+
+Pack textures are read, decoded and mip-chained on helper threads, so a
+texture that is not ready yet draws the original from the ROM and is replaced
+once it arrives, rather than stalling the race.
 
 ## No game data is included
 

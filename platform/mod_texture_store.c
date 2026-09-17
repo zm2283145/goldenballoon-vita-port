@@ -144,6 +144,7 @@ enum {
 
 typedef struct StoreSlot {
     char      digest[MDKR_MOD_TEXTURE_DIGEST_CHARS + 1];
+    uint8_t  *owned;       /* whole-file .vtex allocation, or NULL */
     uint8_t  *rgba;
     uint8_t  *mips;        /* worker-built levels 1..N-1, malloc'd, or NULL */
     size_t    mip_bytes;
@@ -273,6 +274,7 @@ static int table_grow(size_t capacity) {
             return 0;
         }
         fresh->rgba = old->rgba;
+        fresh->owned = old->owned;
         fresh->mips = old->mips;
         fresh->mip_bytes = old->mip_bytes;
         fresh->cutout_mips = old->cutout_mips;
@@ -310,6 +312,26 @@ static StoreSlot *slot_for(const char *digest) {
 /* -------------------------------------------------------------- eviction */
 
 static void slot_release_pixels(StoreSlot *slot) {
+    if (slot->owned != NULL) {
+        /* One allocation: pixels and chain live inside it. */
+        free(slot->owned);
+        slot->owned = NULL;
+        slot->rgba = NULL;
+        slot->mips = NULL;
+        s_resident_bytes -= slot->bytes > s_resident_bytes ? s_resident_bytes
+                                                           : slot->bytes;
+        s_resident_bytes -= slot->mip_bytes > s_resident_bytes
+                                ? s_resident_bytes : slot->mip_bytes;
+        slot->bytes = 0;
+        slot->mip_bytes = 0;
+        slot->cutout_mip_bytes = 0;
+        free(slot->cutout_mips);
+        slot->cutout_mips = NULL;
+        slot->width = 0;
+        slot->height = 0;
+        slot->state = SLOT_UNRESOLVED;
+        return;
+    }
     free(slot->mips);
     slot->mips = NULL;
     s_resident_bytes -= slot->mip_bytes > s_resident_bytes ? s_resident_bytes
@@ -770,6 +792,10 @@ typedef struct AsyncJob {
 
 typedef struct AsyncDone {
     char     key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
+    /* Set for a .vtex: one allocation holding header, pixels and chain.
+     * `rgba`/`mips` point into it and must not be freed separately. */
+    uint8_t *owned;
+    int      mips_borrowed;
     uint8_t *rgba;
     uint8_t *mips;
     size_t   mip_bytes;
@@ -798,6 +824,124 @@ static void async_unlock(void) { sceKernelUnlockMutex(s_async_lock, 1); }
 
 static void set_reason(char *dst, size_t cap, const char *text) {
     snprintf(dst, cap, "%s", text != NULL ? text : "unusable");
+}
+
+/* One offline-converted texture: header, then level 0 and every mip level
+ * packed tightly in the order gfx_mip_build writes them.
+ *
+ *   0  magic "VTEX"        8  width  (u16)     13 flags    (u8)
+ *   4  version (u16)      10  height (u16)     14 reserved (u16)
+ *   6  format  (u16)      12  levels (u8)      16 payload  (u32)
+ *   20 reserved (u32)     24  pad to 32
+ *
+ * The payload is handed to the uploader as-is, so the file must carry the
+ * COMPLETE chain: gfx_mip_chain_layout derives level pointers from the
+ * dimensions and would otherwise address past the buffer. */
+#define VTEX_HEADER_BYTES 32u
+#define VTEX_FORMAT_RGBA8 0u
+
+static int path_is_vtex(const char *relative) {
+    size_t length = relative != NULL ? strlen(relative) : 0;
+    return length > 5 &&
+           (relative[length - 5] == '.') &&
+           (relative[length - 4] == 'v' || relative[length - 4] == 'V') &&
+           (relative[length - 3] == 't' || relative[length - 3] == 'T') &&
+           (relative[length - 2] == 'e' || relative[length - 2] == 'E') &&
+           (relative[length - 1] == 'x' || relative[length - 1] == 'X');
+}
+
+static uint32_t vtex_u32(const unsigned char *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
+           ((uint32_t)p[3] << 24);
+}
+static uint16_t vtex_u16(const unsigned char *p) {
+    return (uint16_t)((uint32_t)p[0] | ((uint32_t)p[1] << 8));
+}
+
+/* Reads one whole pack entry. Returns a malloc'd buffer the caller owns. */
+static unsigned char *worker_read_entry(const char *relative, size_t *out_size,
+                                        char *reason, size_t cap) {
+    MdkrModFile    file;
+    unsigned char *bytes = NULL;
+    size_t         size = 0;
+    int            result;
+
+    store_io_lock();
+    if (!mdkr_mod_registry_open_file(s_registry, relative, &file)) {
+        store_io_unlock();
+        set_reason(reason, cap, "the pack file it names could not be opened");
+        return NULL;
+    }
+    result = mdkr_mod_source_read(file.source, file.relative, NULL, 0, &size);
+    if ((result == MDKR_MOD_SOURCE_BUFFER_TOO_SMALL ||
+         result == MDKR_MOD_SOURCE_OK) &&
+        size > 0 && size <= MDKR_MOD_TEXTURE_FILE_BYTES_MAX) {
+        bytes = (unsigned char *)malloc(size);
+        if (bytes != NULL &&
+            mdkr_mod_source_read(file.source, file.relative, bytes, size,
+                                 &size) != MDKR_MOD_SOURCE_OK) {
+            free(bytes);
+            bytes = NULL;
+        }
+    }
+    mdkr_mod_registry_close_file(&file);
+    store_io_unlock();
+    if (bytes == NULL) {
+        set_reason(reason, cap, "the file could not be read");
+        return NULL;
+    }
+    *out_size = size;
+    return bytes;
+}
+
+/* Validate a .vtex and keep its buffer: level 0 and the chain are used in
+ * place, so nothing is copied and nothing is filtered. */
+static unsigned char *worker_load_vtex(const char *relative, int *out_w,
+                                       int *out_h, size_t *out_mip_bytes,
+                                       char *reason, size_t cap) {
+    size_t         size = 0;
+    unsigned char *bytes = worker_read_entry(relative, &size, reason, cap);
+    unsigned       width, height, levels, format, version;
+    uint32_t       payload;
+    size_t         expect_base, expect_mips;
+
+    if (bytes == NULL) return NULL;
+    if (size < VTEX_HEADER_BYTES || memcmp(bytes, "VTEX", 4) != 0) {
+        free(bytes);
+        set_reason(reason, cap, "the .vtex header is not valid");
+        return NULL;
+    }
+    version = vtex_u16(bytes + 4);
+    format = vtex_u16(bytes + 6);
+    width = vtex_u16(bytes + 8);
+    height = vtex_u16(bytes + 10);
+    levels = bytes[12];
+    payload = vtex_u32(bytes + 16);
+    if (version != 1u || format != VTEX_FORMAT_RGBA8) {
+        free(bytes);
+        set_reason(reason, cap, "this build cannot read that .vtex version");
+        return NULL;
+    }
+    if (width == 0u || height == 0u ||
+        width > (unsigned)MDKR_MOD_TEXTURE_DIMENSION_MAX ||
+        height > (unsigned)MDKR_MOD_TEXTURE_DIMENSION_MAX) {
+        free(bytes);
+        set_reason(reason, cap, "the .vtex dimensions are out of range");
+        return NULL;
+    }
+    expect_base = (size_t)width * (size_t)height * 4u;
+    expect_mips = gfx_mip_chain_bytes((int)width, (int)height);
+    if (levels != (unsigned)gfx_mip_level_count((int)width, (int)height) ||
+        (size_t)payload != expect_base + expect_mips ||
+        size < VTEX_HEADER_BYTES + expect_base + expect_mips) {
+        free(bytes);
+        set_reason(reason, cap, "the .vtex payload does not match its header");
+        return NULL;
+    }
+    *out_w = (int)width;
+    *out_h = (int)height;
+    *out_mip_bytes = expect_mips;
+    return bytes;
 }
 
 /* Worker-side twin of load_pack_png(): same admission rules, no profiler
@@ -862,6 +1006,25 @@ static void worker_decode(const AsyncJob *job, AsyncDone *done) {
     int w = 0, h = 0;
     unsigned char *pixels = NULL;
 
+    if (job->all != NULL && path_is_vtex(job->all)) {
+        size_t mip_bytes = 0;
+        unsigned char *container = worker_load_vtex(job->all, &w, &h,
+                                                    &mip_bytes, done->reason,
+                                                    sizeof done->reason);
+        if (container != NULL) {
+            done->owned = container;
+            done->rgba = container + VTEX_HEADER_BYTES;
+            done->width = w;
+            done->height = h;
+            done->mips = mip_bytes > 0
+                ? container + VTEX_HEADER_BYTES +
+                      (size_t)w * (size_t)h * 4u
+                : NULL;
+            done->mip_bytes = mip_bytes;
+            done->mips_borrowed = 1;
+        }
+        return;
+    }
     if (job->all != NULL) {
         pixels = worker_load_png(job->all, &w, &h, done->reason,
                                  sizeof done->reason);
@@ -961,11 +1124,13 @@ static int async_worker(SceSize args, void *argp) {
         }
         if (s_worker_busy > 0) s_worker_busy--;
         async_unlock();
-        if (done.rgba != NULL) { /* stale or full */
+        if (done.owned != NULL) {           /* stale or full */
+            free(done.owned);
+        } else if (done.rgba != NULL) {
             stbi_image_free(done.rgba);
             free(done.mips);
-            free(done.cutout_mips);
         }
+        free(done.cutout_mips);
     }
     return 0;
 }
@@ -1022,16 +1187,14 @@ static void async_pump(void) {
         AsyncDone *done = &batch[i];
         StoreSlot *slot;
         size_t     bytes;
-        if (done->gen != s_async_gen) {
-            if (done->rgba != NULL) stbi_image_free(done->rgba);
-            free(done->mips);
-            free(done->cutout_mips);
-            continue;
-        }
-        slot = slot_for(done->key);
-        if (slot == NULL || slot->state != SLOT_PENDING) {
-            if (done->rgba != NULL) stbi_image_free(done->rgba);
-            free(done->mips);
+        if (done->gen != s_async_gen || (slot = slot_for(done->key)) == NULL ||
+            slot->state != SLOT_PENDING) {
+            if (done->owned != NULL) {
+                free(done->owned);
+            } else if (done->rgba != NULL) {
+                stbi_image_free(done->rgba);
+                free(done->mips);
+            }
             free(done->cutout_mips);
             continue;
         }
@@ -1042,14 +1205,19 @@ static void async_pump(void) {
         }
         bytes = (size_t)done->width * (size_t)done->height * 4u;
         if (!evict_for(bytes + done->mip_bytes + done->cutout_mip_bytes)) {
-            stbi_image_free(done->rgba);
-            free(done->mips);
+            if (done->owned != NULL) {
+                free(done->owned);
+            } else {
+                stbi_image_free(done->rgba);
+                free(done->mips);
+            }
             free(done->cutout_mips);
             slot->state = SLOT_REJECTED;
             report_rejection(slot->digest,
                              "the image is larger than the whole texture cache");
             continue;
         }
+        slot->owned = done->owned;
         slot->mips = done->mips;
         slot->mip_bytes = done->mip_bytes;
         slot->cutout_mips = done->cutout_mips;
@@ -1076,10 +1244,12 @@ static void async_reset(void) {
     s_async_gen++;
     s_job_head = s_job_count = 0;
     while (s_done_count > 0) {
-        if (s_done[s_done_head].rgba != NULL) {
+        if (s_done[s_done_head].owned != NULL) {
+            free(s_done[s_done_head].owned);
+        } else if (s_done[s_done_head].rgba != NULL) {
             stbi_image_free(s_done[s_done_head].rgba);
+            free(s_done[s_done_head].mips);
         }
-        free(s_done[s_done_head].mips);
         free(s_done[s_done_head].cutout_mips);
         s_done_head = (s_done_head + 1u) % ASYNC_RING_MAX;
         s_done_count--;
@@ -1133,8 +1303,12 @@ void mdkr_mod_texture_store_shutdown(void) {
     s_rice_resident = 0;
 
     for (index = 0; index < s_slot_capacity; index++) {
-        stbi_image_free(s_slots[index].rgba);
-        free(s_slots[index].mips);
+        if (s_slots[index].owned != NULL) {
+            free(s_slots[index].owned);
+        } else {
+            stbi_image_free(s_slots[index].rgba);
+            free(s_slots[index].mips);
+        }
         free(s_slots[index].cutout_mips);
     }
     free(s_slots);
@@ -1343,7 +1517,7 @@ int mdkr_mod_texture_lookup_rice_async(uint32_t crc, int fmt, int siz,
         queued = 1;
     }
     async_unlock();
-    if (!queued) return mdkr_mod_texture_lookup_rice(crc, fmt, siz, out);
+    if (!queued) return 0; /* stays UNRESOLVED; queued on a later bind */
     slot->state = SLOT_PENDING;
     sceKernelSignalSema(s_async_sema, 1);
     return 2;
