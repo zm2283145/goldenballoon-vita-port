@@ -1,0 +1,90 @@
+name: PS Vita VPK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: vita-vpk-main
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build main Vita VPK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Manual dispatches build main too, not an arbitrary selected branch.
+          ref: ${{ github.event_name == 'push' && github.sha || 'main' }}
+          persist-credentials: false
+      - name: Source identity and ROM-free checks
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(sed -nE 's/^set\(MDKR_VERSION "([0-9]+\.[0-9]+\.[0-9]+)" CACHE STRING.*$/\1/p' CMakeLists.txt)"
+          test -n "$version"
+          echo "VITA_VERSION=$version" >> "$GITHUB_ENV"
+          echo "VITA_SOURCE_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+          bash -n tools/ci/setup_vita_sdk.sh
+          python3 tests/test_audio_sink_evidence_contract.py
+          python3 tests/test_output_filter_failure_contract.py
+          python3 tests/test_vita_vpk.py
+      - name: Install pinned VitaSDK and graphics libraries
+        shell: bash
+        run: bash tools/ci/setup_vita_sdk.sh
+      - name: Configure and build
+        shell: bash
+        run: |
+          set -euo pipefail
+          /usr/bin/cmake -S . -B build-vita-ci -G Ninja \
+            -DCMAKE_TOOLCHAIN_FILE="$VITASDK/share/vita.toolchain.cmake" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMDKR_VERSION="$VITA_VERSION" \
+            -DMDKR_VITAGL_ROOT="$MDKR_VITAGL_ROOT" \
+            -DMDKR_VITA_DEBUGGER=OFF \
+            -DMDKR_VITA_PROFILER=OFF
+          /usr/bin/cmake --build build-vita-ci --target mdkr64 --parallel 4
+      - name: Package VPK
+        shell: pwsh
+        run: ./tools/package_vita.ps1 -BuildDir build-vita-ci
+      - name: Verify and collect artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          out=build-vita-ci/artifacts
+          mkdir -p "$out"
+          name="GoldenBalloon-Vita-v${VITA_VERSION}-${VITA_SOURCE_SHA:0:8}.vpk"
+          cp build-vita-ci/mdkr64.vpk "$out/$name"
+          python3 tools/verify_vita_vpk.py "$out/$name" \
+            --version "$VITA_VERSION" > "$out/verification.json"
+          (
+            cd "$out"
+            sha256sum "$name" > SHA256SUMS.txt
+          )
+          printf '%s\n' \
+            "source=$VITA_SOURCE_SHA" \
+            "version=$VITA_VERSION" \
+            "sdk=$VITA_SDK_RELEASE" \
+            "packages=$VITA_PACKAGES_RELEASE" \
+            "vitaGL=$VITAGL_COMMIT" \
+            "vitaShaRK=$VITASHARK_COMMIT" \
+            "debugger=OFF" "profiler=OFF" > "$out/BUILD_INFO.txt"
+          {
+            echo "### PS Vita VPK"
+            echo "Source: \`$VITA_SOURCE_SHA\` (main)"
+            echo "Version: \`$VITA_VERSION\`"
+            echo "Download the artifact below for the VPK, SHA-256 and build details."
+            echo "No ROM or texture packs included. This is a CI build, not a hardware-qualified release."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+        with:
+          name: GoldenBalloon-Vita-${{ env.VITA_VERSION }}-${{ env.VITA_SOURCE_SHA }}
+          path: build-vita-ci/artifacts/
+          if-no-files-found: error
+          retention-days: 30

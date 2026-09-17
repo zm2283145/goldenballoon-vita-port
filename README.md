@@ -299,6 +299,25 @@ See [DISCLAIMER.md](DISCLAIMER.md) and [NOTICE.md](NOTICE.md).
 
 ## Building from source
 
+### Automated PS Vita builds
+
+The [PS Vita VPK workflow](https://github.com/zm2283145/goldenballoon-vita-port/actions/workflows/vita-build.yml)
+builds every push to `main`. To start one manually, open that Actions workflow
+and choose **Run workflow**; manual runs also build `main`.
+
+After a successful run, download its **GoldenBalloon-Vita** artifact. The ZIP
+contains a versioned VPK, `SHA256SUMS.txt`, `BUILD_INFO.txt` with the exact source
+and dependency revisions, and package-verification results. Artifacts are kept
+for 30 days and may require a GitHub login to download. These are CI builds, not
+automatically published or hardware-qualified releases; stable releases remain
+on the [Releases page](https://github.com/zm2283145/goldenballoon-vita-port/releases).
+
+CI uses checksum-pinned VitaSDK packages and matching pinned vitaGL/vitaShaRK
+sources. It includes LiveArea artwork and trophies, but never downloads or
+bundles a ROM, texture pack, or `libshacccg.suprx`. Debugger/profiler integration
+is disabled. The same `tools/package_vita.ps1` packaging recipe runs on Windows
+locally and PowerShell on the Ubuntu runner.
+
 ### Desktop / browser (unchanged from upstream)
 
 ```bash

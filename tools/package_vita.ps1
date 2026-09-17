@@ -23,8 +23,11 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+if (-not $env:VITASDK) {
+    throw "VITASDK must point to an installed VitaSDK."
+}
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$build = Join-Path $repoRoot $BuildDir
+$build = if ([IO.Path]::IsPathRooted($BuildDir)) { $BuildDir } else { Join-Path $repoRoot $BuildDir }
 $livearea = Join-Path $repoRoot "vita\livearea"
 $trophyPack = Join-Path $build "TROPHY.TRP"
 $cmakeLists = Join-Path $repoRoot "CMakeLists.txt"
@@ -42,8 +45,14 @@ if ($major -gt 99 -or $minor -gt 9 -or $patch -gt 9) {
     throw "MDKR_VERSION cannot be represented by Vita APP_VER"
 }
 $vitaAppVersion = ('{0:D2}.{1}{2}' -f $major, $minor, $patch)
+$version = "$major.$minor.$patch"
+$cacheVersion = Select-String -Path (Join-Path $build "CMakeCache.txt") `
+    -Pattern '^MDKR_VERSION:STRING=(.+)$' | Select-Object -First 1
+if ($null -eq $cacheVersion -or $cacheVersion.Matches[0].Groups[1].Value -cne $version) {
+    throw "CMakeCache.txt version does not match $version -- reconfigure and rebuild before packaging."
+}
 
-$env:Path = "$env:VITASDK\bin;" + $env:Path
+$env:PATH = (Join-Path $env:VITASDK "bin") + [IO.Path]::PathSeparator + $env:PATH
 
 Push-Location $build
 try {
@@ -61,6 +70,7 @@ try {
     Copy-Item mdkr64 mdkr64.elf.unstripped -Force
     Copy-Item mdkr64 mdkr64.elf -Force
     arm-vita-eabi-strip -g mdkr64.elf
+    if ($LASTEXITCODE -ne 0) { throw "arm-vita-eabi-strip failed" }
 
     vita-elf-create mdkr64.elf mdkr64.velf
     if ($LASTEXITCODE -ne 0) { throw "vita-elf-create failed" }
@@ -82,10 +92,10 @@ try {
         vita-pack-vpk -s param.sfo -b eboot.bin mdkr64.vpk
     } else {
         vita-pack-vpk -s param.sfo -b eboot.bin `
-            -a "$livearea\icon0.png=sce_sys/icon0.png" `
-            -a "$livearea\bg.png=sce_sys/livearea/contents/bg.png" `
-            -a "$livearea\startup.png=sce_sys/livearea/contents/startup.png" `
-            -a "$livearea\template.xml=sce_sys/livearea/contents/template.xml" `
+            -a "$(Join-Path $livearea 'icon0.png')=sce_sys/icon0.png" `
+            -a "$(Join-Path $livearea 'bg.png')=sce_sys/livearea/contents/bg.png" `
+            -a "$(Join-Path $livearea 'startup.png')=sce_sys/livearea/contents/startup.png" `
+            -a "$(Join-Path $livearea 'template.xml')=sce_sys/livearea/contents/template.xml" `
             -a "$trophyPack=sce_sys/trophy/GBLN00001_00/TROPHY.TRP" `
             mdkr64.vpk
     }

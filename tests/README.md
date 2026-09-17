@@ -17,6 +17,15 @@ MDKR_TRACE=1 ./build/mdkr64 --headless-frames 1700 \
 Expected: `menuId=3` (character select). The options script yields `menuId=12`.
 Both prove real input reaches the game and menus advance/diverge on navigation.
 
+## Vita build artifacts
+
+Run `python tests/test_vita_vpk.py` for ROM-free synthetic archive checks.
+The suite exercises the production `tools/verify_vita_vpk.py` verifier: required
+package members, rejection of extra game data, title/version agreement, and
+SFO bounds. The PS Vita VPK workflow runs it before building and verifies the
+actual packaged archive before upload. This is packaging coverage, not a
+substitute for installing and playing the resulting build on a Vita.
+
 ## Character release acceptance receipt
 
 `character_release_evidence` runs
