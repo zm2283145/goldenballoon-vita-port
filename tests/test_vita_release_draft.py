@@ -51,6 +51,8 @@ class FakeGitHub:
         if method == "POST" and endpoint == "releases":
             release = dict(data, id=len(self.items) + 1, assets=[],
                            published_at=None, html_url="https://github.com/owner/repo/releases/draft")
+            if release["tag_name"] == "vita-next":
+                release["tag_name"] = "untagged-generated"
             self.items.append(release)
             return copy.deepcopy(release)
         if endpoint.startswith("releases/assets/"):
@@ -66,7 +68,9 @@ class FakeGitHub:
     def upload(self, tag, path):
         if self.fail_upload:
             raise OSError("simulated upload failure")
-        release = next(item for item in self.items if item["tag_name"] == tag)
+        release = next(item for item in self.items if (
+            item["tag_name"] == tag or draft.is_next_build_release(item)
+        ))
         self.uploads.append(path.name)
         release["assets"].append({
             "id": self.next_asset, "name": path.name,
@@ -175,6 +179,20 @@ class DraftReleaseTest(unittest.TestCase):
         self.run_draft()
         self.assertEqual(len(self.github.uploads), 4)
         self.assertEqual(len(self.github.items[-1]["assets"]), 4)
+
+    def test_recovers_existing_untagged_next_build_draft(self):
+        self.github.items.append({
+            "id": 2, "tag_name": "untagged-existing", "draft": True,
+            "prerelease": False, "published_at": None,
+            "name": "Golden Balloon Vita - Next Build (v1.7.2)",
+            "body": "Manual note\n\n<!-- vita-next-build-draft -->",
+            "assets": [], "html_url": "https://github.com/owner/repo/releases/draft",
+        })
+        result = self.run_draft()
+        self.assertEqual(result["action"], "updated")
+        self.assertEqual(len(self.github.items), 2)
+        self.assertEqual(self.github.items[-1]["tag_name"], "vita-next")
+        self.assertIn("Manual note", self.github.items[-1]["body"])
 
     def test_bad_checksum_rejected_before_mutation(self):
         (self.directory / "SHA256SUMS.txt").write_text("bad")
