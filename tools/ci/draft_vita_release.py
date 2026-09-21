@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Refresh a versioned Vita release draft; never publish or replace a release."""
+"""Refresh the rolling Vita next-build draft; never publish a release."""
 
 import argparse
 import hashlib
@@ -19,6 +19,7 @@ from verify_vita_vpk import app_version, verify
 START = "<!-- vita-vpk-generated:start -->"
 END = "<!-- vita-vpk-generated:end -->"
 ASSETS = re.compile(r"<!-- vita-vpk-assets: ([0-9,]*) -->")
+NEXT_BUILD_TAG = "vita-next"
 
 
 class GitHub:
@@ -126,12 +127,15 @@ def update_draft(github, version, source, directory):
     app_version(version)
     if re.fullmatch(r"[0-9a-f]{40}", source) is None:
         raise ValueError("Expected a full source commit SHA")
-    tag = f"v{version}"
+    tag = NEXT_BUILD_TAG
     releases = github.releases()
     matches = [release for release in releases if release["tag_name"] == tag]
     if any(not release["draft"] for release in matches):
         return {"action": "skipped-published", "tag": tag,
-                "message": "Published release untouched. Bump MDKR_VERSION for the next draft."}
+                "message": (
+                    "Published vita-next release untouched. Rename its tag before "
+                    "publishing so the rolling draft can be recreated."
+                )}
     if len(matches) > 1:
         raise ValueError("Multiple drafts exist for this version; resolve them before retrying")
     main = github.api("GET", "git/ref/heads/main")["object"]["sha"]
@@ -144,9 +148,6 @@ def update_draft(github, version, source, directory):
     stable = [release for release in releases if not release["draft"] and not release["prerelease"]]
     previous = max(stable, key=lambda release: release["published_at"]) if stable else None
     previous_tag = previous["tag_name"] if previous else None
-    if previous_tag and re.fullmatch(r"v\d+\.\d+\.\d+", previous_tag):
-        if tuple(map(int, version.split("."))) <= tuple(map(int, previous_tag[1:].split("."))):
-            raise ValueError("Draft version must be newer than the last published stable release")
     data = {"tag_name": tag, "target_commitish": source}
     if previous_tag:
         data["previous_tag_name"] = previous_tag
@@ -157,12 +158,15 @@ def update_draft(github, version, source, directory):
         if previous_tag else f"https://github.com/{github.repo}/commits/{source}"
     )
     content = (
-        f"## Golden Balloon Vita {version}\n\n"
+        f"## Golden Balloon Vita Next Build\n\n"
         "**Draft build: review these notes and validate on hardware before publishing.**\n\n"
-        f"Built from main commit `{source}`. [Full changes]({compare}).\n\n"
+        f"App version `{version}` built from main commit `{source}`. "
+        f"[Full changes]({compare}).\n\n"
         f"{generated}\n\n{changes}\n\n"
         "The attached VPK includes LiveArea artwork and trophies, but no ROM or texture pack. "
-        "Debugger and profiler integration are disabled.\n"
+        "Debugger and profiler integration are disabled.\n\n"
+        "Before publishing, replace the `vita-next` tag with the intended release tag "
+        "and update `MDKR_VERSION` when the public app version changes.\n"
     )
     if matches:
         release = require_draft(github, matches[0]["id"])
@@ -170,7 +174,7 @@ def update_draft(github, version, source, directory):
     else:
         release = github.api("POST", "releases", {
             "tag_name": tag, "target_commitish": source,
-            "name": f"Golden Balloon Vita {tag}",
+            "name": f"Golden Balloon Vita - Next Build (v{version})",
             "draft": True, "prerelease": False,
             "body": f"{START}\nBuild upload in progress; do not publish yet.\n{END}",
         })
@@ -199,7 +203,11 @@ def update_draft(github, version, source, directory):
     state = ",".join(map(str, new_ids))
     block = f"{START}\n{content}\n<!-- vita-vpk-assets: {state} -->\n{END}"
     body = replace_generated(current.get("body") or "", block)
-    github.api("PATCH", f"releases/{release_id}", {"body": body, "target_commitish": source})
+    github.api("PATCH", f"releases/{release_id}", {
+        "body": body,
+        "name": f"Golden Balloon Vita - Next Build (v{version})",
+        "target_commitish": source,
+    })
     for asset in current["assets"]:
         if asset["id"] in old_ids - set(new_ids):
             require_draft(github, release_id)

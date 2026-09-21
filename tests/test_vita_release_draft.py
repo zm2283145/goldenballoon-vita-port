@@ -88,19 +88,22 @@ class DraftReleaseTest(unittest.TestCase):
         patch.object(draft, "commit_notes", return_value="### Commit changes\n\n- Direct fix").start()
         self.artifacts()
 
-    def artifacts(self, source=SOURCE, run="100"):
+    def artifacts(self, source=SOURCE, run="100", version="1.7.3"):
         for path in self.directory.iterdir():
             path.unlink()
-        name = f"GoldenBalloon-Vita-v1.7.3-{source[:8]}-{run}-1.vpk"
+        name = f"GoldenBalloon-Vita-v{version}-{source[:8]}-{run}-1.vpk"
+        major, minor, patch_version = map(int, version.split("."))
+        sfo_version = f"{major:02d}.{minor}{patch_version}"
         vpk = self.directory / name
         with zipfile.ZipFile(vpk, "w") as archive:
             for member in verifier.FILES:
-                data = make_sfo(version="01.73") if member.endswith("param.sfo") else b"fixture"
+                data = make_sfo(version=sfo_version) if member.endswith("param.sfo") else b"fixture"
                 archive.writestr(member, data)
-        report = draft.verify(vpk, "1.7.3")
+        report = draft.verify(vpk, version)
         (self.directory / "verification.json").write_text(json.dumps(report))
         (self.directory / "SHA256SUMS.txt").write_text(f"{report['sha256']}  {name}\n")
-        (self.directory / "BUILD_INFO.txt").write_text(f"source={source}\nversion=1.7.3\n")
+        (self.directory / "BUILD_INFO.txt").write_text(
+            f"source={source}\nversion={version}\n")
 
     def run_draft(self, source=SOURCE, version="1.7.3"):
         return draft.update_draft(self.github, version, source, self.directory)
@@ -110,6 +113,9 @@ class DraftReleaseTest(unittest.TestCase):
         result = self.run_draft()
         release = self.github.items[-1]
         self.assertEqual(result["action"], "created")
+        self.assertEqual(result["tag"], "vita-next")
+        self.assertEqual(release["tag_name"], "vita-next")
+        self.assertEqual(release["name"], "Golden Balloon Vita - Next Build (v1.7.3)")
         self.assertTrue(release["draft"])
         self.assertEqual(release["target_commitish"], SOURCE)
         self.assertEqual(len(release["assets"]), 4)
@@ -120,8 +126,20 @@ class DraftReleaseTest(unittest.TestCase):
         self.assertEqual(generation[2]["previous_tag_name"], "v1.7.2")
         self.assertFalse(any(call[2] and call[2].get("draft") is False for call in self.github.calls))
 
-    def test_published_version_has_no_writes_or_uploads(self):
+    def test_published_app_version_still_creates_rolling_draft(self):
+        self.artifacts(version="1.7.2")
         result = self.run_draft(version="1.7.2")
+        self.assertEqual(result["action"], "created")
+        self.assertEqual(self.github.items[-1]["tag_name"], "vita-next")
+        self.assertEqual(len(self.github.uploads), 4)
+
+    def test_published_rolling_tag_has_no_writes_or_uploads(self):
+        self.github.items.append({
+            "id": 2, "tag_name": "vita-next", "draft": False,
+            "prerelease": False, "published_at": "2026-09-18T00:00:00Z",
+            "body": "Published rolling tag", "assets": [],
+        })
+        result = self.run_draft()
         self.assertEqual(result["action"], "skipped-published")
         self.assertEqual(self.github.calls, [])
         self.assertEqual(self.github.uploads, [])
