@@ -108,6 +108,9 @@ class DraftReleaseTest(unittest.TestCase):
         (self.directory / "SHA256SUMS.txt").write_text(f"{report['sha256']}  {name}\n")
         (self.directory / "BUILD_INFO.txt").write_text(
             f"source={source}\nversion={version}\n")
+        with zipfile.ZipFile(self.directory / f"{vpk.stem}.source.zip", "w") as archive:
+            archive.writestr(
+                f"goldenballoon-vita-{source[:8]}/CMakeLists.txt", b"source")
 
     def run_draft(self, source=SOURCE, version="1.7.3"):
         return draft.update_draft(self.github, version, source, self.directory)
@@ -122,7 +125,12 @@ class DraftReleaseTest(unittest.TestCase):
         self.assertEqual(release["name"], "Golden Balloon Vita - Next Build (v1.7.3)")
         self.assertTrue(release["draft"])
         self.assertEqual(release["target_commitish"], SOURCE)
-        self.assertEqual(len(release["assets"]), 4)
+        self.assertEqual(len(release["assets"]), 3)
+        self.assertTrue(any(asset["name"].endswith(".source.zip")
+                            for asset in release["assets"]))
+        self.assertFalse(any(asset["name"].endswith(".build-info.txt")
+                             or asset["name"].endswith(".verification.json")
+                             for asset in release["assets"]))
         self.assertIn("merged improvement", release["body"])
         self.assertIn("Direct fix", release["body"])
         self.assertEqual(self.github.items[0], published)
@@ -135,7 +143,7 @@ class DraftReleaseTest(unittest.TestCase):
         result = self.run_draft(version="1.7.2")
         self.assertEqual(result["action"], "created")
         self.assertEqual(self.github.items[-1]["tag_name"], "vita-next")
-        self.assertEqual(len(self.github.uploads), 4)
+        self.assertEqual(len(self.github.uploads), 3)
 
     def test_published_rolling_tag_has_no_writes_or_uploads(self):
         self.github.items.append({
@@ -177,8 +185,8 @@ class DraftReleaseTest(unittest.TestCase):
     def test_same_artifact_retry_reuses_existing_uploads(self):
         self.run_draft()
         self.run_draft()
-        self.assertEqual(len(self.github.uploads), 4)
-        self.assertEqual(len(self.github.items[-1]["assets"]), 4)
+        self.assertEqual(len(self.github.uploads), 3)
+        self.assertEqual(len(self.github.items[-1]["assets"]), 3)
 
     def test_recovers_existing_untagged_next_build_draft(self):
         self.github.items.append({
