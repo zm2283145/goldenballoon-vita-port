@@ -69,6 +69,9 @@ jobs:
           mkdir -p "$out"
           name="GoldenBalloon-Vita-v${VITA_VERSION}-${VITA_SOURCE_SHA:0:8}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.vpk"
           cp build-vita-ci/mdkr64.vpk "$out/$name"
+          git archive --format=zip \
+            --prefix="goldenballoon-vita-${VITA_SOURCE_SHA:0:8}/" \
+            --output="$out/${name%.vpk}.source.zip" HEAD
           python3 tools/verify_vita_vpk.py "$out/$name" \
             --version "$VITA_VERSION" > "$out/verification.json"
           (
@@ -87,7 +90,7 @@ jobs:
             echo "### PS Vita VPK"
             echo "Source: \`$VITA_SOURCE_SHA\` (main)"
             echo "Version: \`$VITA_VERSION\`"
-            echo "Download the artifact below for the VPK, SHA-256 and build details."
+            echo "Download the artifact below for the VPK, SHA-256, exact source archive and build details."
             echo "No ROM or texture packs included. This is a CI build, not a hardware-qualified release."
           } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4

@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from verify_vita_vpk import app_version, verify
@@ -128,11 +129,17 @@ def verified_files(directory, version, source):
     info = (directory / "BUILD_INFO.txt").read_text().splitlines()
     if f"source={source}" not in info or f"version={version}" not in info:
         raise ValueError("Artifact build identity does not match this job")
+    source_zip = directory / f"{vpk.stem}.source.zip"
+    if not zipfile.is_zipfile(source_zip):
+        raise ValueError("Expected a valid source ZIP for this build")
+    expected_source = f"goldenballoon-vita-{source[:8]}/CMakeLists.txt"
+    with zipfile.ZipFile(source_zip) as archive:
+        if expected_source not in archive.namelist():
+            raise ValueError("Source ZIP does not match the build commit identity")
     return {
         vpk.name: vpk,
         f"{vpk.stem}.sha256": directory / "SHA256SUMS.txt",
-        f"{vpk.stem}.build-info.txt": directory / "BUILD_INFO.txt",
-        f"{vpk.stem}.verification.json": directory / "verification.json",
+        source_zip.name: source_zip,
     }
 
 
@@ -207,7 +214,7 @@ def update_draft(github, version, source, directory):
             if asset is None:
                 upload = Path(temporary) / name
                 shutil.copyfile(path, upload)
-                github.upload(tag, upload)
+                github.upload(current["tag_name"], upload)
                 current = require_draft(github, release_id)
                 asset = next((item for item in current["assets"] if item["name"] == name), None)
             if asset is None or asset.get("digest") != digest:
