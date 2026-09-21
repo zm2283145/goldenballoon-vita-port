@@ -20,6 +20,8 @@ START = "<!-- vita-vpk-generated:start -->"
 END = "<!-- vita-vpk-generated:end -->"
 ASSETS = re.compile(r"<!-- vita-vpk-assets: ([0-9,]*) -->")
 NEXT_BUILD_TAG = "vita-next"
+NEXT_BUILD_NAME = "Golden Balloon Vita - Next Build"
+NEXT_BUILD_MARKER = "<!-- vita-next-build-draft -->"
 
 
 class GitHub:
@@ -66,6 +68,17 @@ def replace_generated(body, generated):
     if body.count(START) != 1 or body.count(END) != 1 or body.index(END) < body.index(START):
         raise ValueError("Draft has malformed generated-note markers; refusing to overwrite it")
     return body[:body.index(START)] + generated + body[body.index(END) + len(END):]
+
+
+def is_next_build_release(release):
+    if release["tag_name"] == NEXT_BUILD_TAG:
+        return True
+    if not release["draft"]:
+        return False
+    return (
+        NEXT_BUILD_MARKER in (release.get("body") or "")
+        or (release.get("name") or "").startswith(NEXT_BUILD_NAME)
+    )
 
 
 def commit_notes(repo, source, previous_tag):
@@ -129,7 +142,7 @@ def update_draft(github, version, source, directory):
         raise ValueError("Expected a full source commit SHA")
     tag = NEXT_BUILD_TAG
     releases = github.releases()
-    matches = [release for release in releases if release["tag_name"] == tag]
+    matches = [release for release in releases if is_next_build_release(release)]
     if any(not release["draft"] for release in matches):
         return {"action": "skipped-published", "tag": tag,
                 "message": (
@@ -174,9 +187,12 @@ def update_draft(github, version, source, directory):
     else:
         release = github.api("POST", "releases", {
             "tag_name": tag, "target_commitish": source,
-            "name": f"Golden Balloon Vita - Next Build (v{version})",
+            "name": f"{NEXT_BUILD_NAME} (v{version})",
             "draft": True, "prerelease": False,
-            "body": f"{START}\nBuild upload in progress; do not publish yet.\n{END}",
+            "body": (
+                f"{NEXT_BUILD_MARKER}\n{START}\n"
+                f"Build upload in progress; do not publish yet.\n{END}"
+            ),
         })
     release_id = release["id"]
     old_block = (release.get("body") or "").split(START, 1)[-1].split(END, 1)[0]
@@ -203,9 +219,12 @@ def update_draft(github, version, source, directory):
     state = ",".join(map(str, new_ids))
     block = f"{START}\n{content}\n<!-- vita-vpk-assets: {state} -->\n{END}"
     body = replace_generated(current.get("body") or "", block)
+    if NEXT_BUILD_MARKER not in body:
+        body = f"{NEXT_BUILD_MARKER}\n{body}"
     github.api("PATCH", f"releases/{release_id}", {
         "body": body,
-        "name": f"Golden Balloon Vita - Next Build (v{version})",
+        "name": f"{NEXT_BUILD_NAME} (v{version})",
+        "tag_name": tag,
         "target_commitish": source,
     })
     for asset in current["assets"]:
