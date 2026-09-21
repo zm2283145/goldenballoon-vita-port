@@ -98,7 +98,7 @@ jobs:
           retention-days: 30
 
   draft-release:
-    name: Prepare release draft
+    name: Refresh next-build release draft
     needs: build
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -114,7 +114,7 @@ jobs:
         with:
           name: GoldenBalloon-Vita-${{ needs.build.outputs.version }}-${{ needs.build.outputs.source_sha }}
           path: build-vita-ci/artifacts
-      - name: Create or refresh the unpublished version draft
+      - name: Create or refresh the rolling next-build draft
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_REPO: ${{ github.repository }}
