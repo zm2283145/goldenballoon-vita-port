@@ -22,7 +22,7 @@ jobs:
       version: ${{ steps.source.outputs.version }}
       source_sha: ${{ steps.source.outputs.source_sha }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           # Manual dispatches build main too, not an arbitrary selected branch.
           ref: ${{ github.event_name == 'push' && github.sha || 'main' }}
@@ -93,7 +93,7 @@ jobs:
             echo "Download the artifact below for the VPK, SHA-256, exact source archive and build details."
             echo "No ROM or texture packs included. This is a CI build, not a hardware-qualified release."
           } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08 # v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4
         with:
           name: GoldenBalloon-Vita-${{ env.VITA_VERSION }}-${{ env.VITA_SOURCE_SHA }}
           path: build-vita-ci/artifacts/
@@ -108,12 +108,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4
         with:
           ref: ${{ needs.build.outputs.source_sha }}
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: GoldenBalloon-Vita-${{ needs.build.outputs.version }}-${{ needs.build.outputs.source_sha }}
           path: build-vita-ci/artifacts
