@@ -84,6 +84,11 @@
 #include "fs_utf8.h"
 #include "mdkr_trace.h"
 #include "mod_music.h"
+#include <time.h>
+#if defined(__vita__)
+#include <psp2/kernel/cpu.h>
+#include <psp2/kernel/threadmgr.h>
+#endif
 
 /* Match the game's ultratypes without pulling the whole PR header chain (which
  * would re-include mixer.h etc.). Same underlying widths as game/include. */
@@ -672,6 +677,7 @@ void dkr_audio_out_shutdown(void) {
         return;
     }
     s_shutdownComplete = 1;
+    dkr_audio_service_join();
     dkr_audio_service_summary();
     /* Drops the decoded track and unbinds the registry it was read from. Done
      * before the device teardown below, because after this point nothing may
@@ -1120,6 +1126,11 @@ static void audio_apply_test_gain(s16 *buf, s32 frameSamples) {
     }
 }
 
+/* Set once the Vita service worker is in use: the volume publish/apply then
+ * happens on the main thread in dkr_audio_service_begin(), because the
+ * settings overlay may publish while the worker is synthesising. */
+static int s_svcVolumeSyncedByCaller;
+
 static void audio_sync_player_volume(void) {
     MdkrAudioVolumeState volume;
     mdkr_audio_volume_snapshot(&volume);
@@ -1165,7 +1176,9 @@ void dkr_audio_service_tick(void) {
         s_serviceNotReady++;
         return;
     }
-    audio_sync_player_volume();
+    if (!s_svcVolumeSyncedByCaller) {
+        audio_sync_player_volume();
+    }
     frameSamples = dkr_choose_frame_samples();
     if (audio_service_perturb_quantum() > 0 &&
         s_serviceClock.stats.serviced_quanta ==
@@ -1251,6 +1264,148 @@ void dkr_audio_service_tick(void) {
     }
 #endif
     audio_trace_music();
+}
+
+/* ---- Overlapped service ------------------------------------------------ *
+ *
+ * The service runs once per completed game pass, after fb_update and before
+ * the next one. Nothing the host does while presenting that pass (snapshot,
+ * real-walk present, interpolated replay walks, pacing sleeps) reads or writes
+ * synthesiser, sound-player or sink-producer state, so on Vita the service is
+ * handed to a worker on a spare core at the start of the presentation path and
+ * joined before control returns to game code. Ordering relative to gameplay is
+ * unchanged: synthesis still sees exactly the state the finished pass left and
+ * is complete before the next pass posts another event. Elsewhere begin() runs
+ * the service inline and join() is a no-op. */
+/* Main-thread-owned statistics. The worker only writes s_svcLastNs, which the
+ * main thread folds in after the join has ordered it. */
+static uint64_t s_svcRuns;
+static uint64_t s_svcNs;
+static uint64_t s_svcMaxNs;
+static uint64_t s_svcJoinNs;
+static uint64_t s_svcJoinMaxNs;
+
+static uint64_t audio_service_now_ns(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static uint64_t audio_service_tick_timed(void) {
+    const uint64_t started = audio_service_now_ns();
+    dkr_audio_service_tick();
+    return audio_service_now_ns() - started;
+}
+
+static void audio_service_account(uint64_t elapsed) {
+    s_svcRuns++;
+    s_svcNs += elapsed;
+    if (elapsed > s_svcMaxNs) {
+        s_svcMaxNs = elapsed;
+    }
+}
+
+#if defined(__vita__) && !defined(MDKR_VITA_AUDIO_SERVICE_INLINE)
+#define DKR_AUDIO_WORKER_CPU      SCE_KERNEL_CPU_MASK_USER_2
+#define DKR_AUDIO_WORKER_PRIORITY (0x10000100 - 8) /* above pack decoders */
+#define DKR_AUDIO_WORKER_STACK    (256 * 1024)
+extern void mdkr_vita_boot_log(const char *msg);
+static SceUID s_svcThread = -1;
+static SceUID s_svcGo = -1;
+static SceUID s_svcDone = -1;
+static int s_svcState;   /* 0 untried, 1 running, -1 inline fallback */
+static int s_svcPending;
+static uint64_t s_svcLastNs; /* written by the worker before s_svcDone */
+
+static int dkr_audio_service_worker(SceSize args, void *argp) {
+    (void)args;
+    (void)argp;
+    for (;;) {
+        if (sceKernelWaitSema(s_svcGo, 1, NULL) < 0) {
+            return 0;
+        }
+        s_svcLastNs = audio_service_tick_timed();
+        sceKernelSignalSema(s_svcDone, 1);
+    }
+}
+
+static int dkr_audio_service_worker_start(void) {
+    char line[128];
+    if (s_svcState != 0) {
+        return s_svcState > 0;
+    }
+    s_svcState = -1;
+    s_svcGo = sceKernelCreateSema("mdkr audio go", 0, 0, 1, NULL);
+    s_svcDone = sceKernelCreateSema("mdkr audio done", 0, 0, 1, NULL);
+    if (s_svcGo >= 0 && s_svcDone >= 0) {
+        s_svcThread = sceKernelCreateThread(
+            "mdkr audio synth", dkr_audio_service_worker,
+            DKR_AUDIO_WORKER_PRIORITY, DKR_AUDIO_WORKER_STACK, 0,
+            DKR_AUDIO_WORKER_CPU, NULL);
+        if (s_svcThread >= 0 &&
+            sceKernelStartThread(s_svcThread, 0, NULL) >= 0) {
+            s_svcState = 1;
+        }
+    }
+    snprintf(line, sizeof(line),
+             "audio: synth worker %s (thread=0x%x core=2)",
+             s_svcState > 0 ? "started" : "unavailable; running inline",
+             (unsigned)s_svcThread);
+    mdkr_vita_boot_log(line);
+    return s_svcState > 0;
+}
+
+void dkr_audio_service_begin(void) {
+    dkr_audio_service_join();
+    if (dkr_audio_service_worker_start()) {
+        s_svcVolumeSyncedByCaller = 1;
+        if (gDkrAudioReady) {
+            audio_sync_player_volume();
+        }
+        s_svcPending = 1;
+        sceKernelSignalSema(s_svcGo, 1);
+        return;
+    }
+    audio_service_account(audio_service_tick_timed());
+}
+
+void dkr_audio_service_join(void) {
+    if (s_svcPending) {
+        const uint64_t started = audio_service_now_ns();
+        uint64_t waited;
+        sceKernelWaitSema(s_svcDone, 1, NULL);
+        waited = audio_service_now_ns() - started;
+        s_svcPending = 0;
+        audio_service_account(s_svcLastNs);
+        s_svcJoinNs += waited;
+        if (waited > s_svcJoinMaxNs) {
+            s_svcJoinMaxNs = waited;
+        }
+    }
+}
+#else
+void dkr_audio_service_begin(void) {
+    audio_service_account(audio_service_tick_timed());
+}
+
+void dkr_audio_service_join(void) {
+}
+#endif
+
+void dkr_audio_service_perf(unsigned long long *runs,
+                            unsigned long long *ns_total,
+                            unsigned long long *ns_max) {
+    if (runs != NULL) *runs = s_svcRuns;
+    if (ns_total != NULL) *ns_total = s_svcNs;
+    if (ns_max != NULL) *ns_max = s_svcMaxNs;
+    s_svcMaxNs = 0u;
+}
+
+void dkr_audio_service_join_perf(unsigned long long *ns_total,
+                                 unsigned long long *ns_max) {
+    if (ns_total != NULL) *ns_total = s_svcJoinNs;
+    if (ns_max != NULL) *ns_max = s_svcJoinMaxNs;
+    s_svcJoinMaxNs = 0u;
 }
 
 void dkr_audio_service_summary(void) {

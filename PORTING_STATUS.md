@@ -8,6 +8,27 @@ same libultraship/vitaGL pattern as
 (a Banjo-Kazooie Vita port used as the concrete reference for library
 choices, link flags, and the VPK packaging recipe).
 
+## Unreleased LAN minimap isolation - 2026-10-27
+
+Network matches now keep minimap visibility local to each endpoint. Only that
+endpoint's own canonical player's live R-C press changes it; remote presses
+and rollback replays cannot flip it. The canonical `gHudToggleSettings` and
+`hud_setting()` values remain separate, while offline play retains the original
+shared local-console behavior. Challenge-mode save/restore also preserves the
+endpoint-local setting.
+
+`tests/check_vita_lan_local_minimap_toggle_behavior.py` compiles the production
+helpers and native R-C statement against host input/roster/replay seams and
+checks both endpoints, replay suppression, canonical-state isolation and offline
+behavior. It and the related source contracts pass. `ninja -C build-vita mdkr64`
+also passes; its linked output is **`build-vita/mdkr64` without an extension**.
+The subsequent 19:40 package step also rebuilt the SELF and VPK, including
+separate finish-banner and digest-diagnostic changes. Nothing has been deployed
+to either Vita; physical two-Vita acceptance remains pending. Do not confuse
+the linked ELF, packaged artifacts and installed device versions.
+
+## Released hardware baseline
+
 **Status: 1.7.2 — working audio and silver-coin jingles confirmed on real
 hardware on 2026-09-17.** A complete Adventure playthrough was confirmed on the
 earlier Restored baseline, not repeated in full for this release. The port
@@ -405,6 +426,77 @@ safe and simply causes it to be rebuilt.
 - **`platform/online/compatibility_identity.c`**: added the `"vita"`
   platform tag to satisfy the file's compile-time OS-tag fence.
 
+## Experimental Vita multiplayer carriers
+
+The Vita title screen exposes a single **Multiplayer** entry. Its submenu
+contains **Ad-hoc**, **LAN**, **Online (Coming Soon)**, and **Back**:
+
+- **`AD-HOC`** uses the Vita's PSP-compatible ad-hoc service, system NetCheck
+  dialog, peer discovery, and bounded nonblocking PDP `HELLO`/`PING`/`ACK`
+  traffic. Two physical Vitas have been validated discovering one another,
+  remaining connected for at least 30 seconds, and returning to searching
+  after a peer disconnects.
+- **`LAN`** provides a Vita-native inline room menu over infrastructure Wi-Fi.
+  A host can name a room with the system IME; browsers discover up to three
+  rooms by UDP broadcast and join one with a unicast handshake. Two physical
+  Vitas have been validated hosting, discovering the custom room name,
+  joining, and reaching the connected state. The carrier now also exchanges a
+  versioned race descriptor, synchronizes both players through a native racer
+  selection screen, completes a ready/arm/go start barrier, installs the
+  deterministic roster and match-input runtime, and transports redundant
+  three-frame input bundles for a two-player race.
+
+NetCheck and IME are advanced asynchronously from normal frame presentation,
+so their system UI overlays the animated title scene without blocking the game
+loop. Accept and cancel paths restore title-menu input.
+
+The first LAN race boot reached `race-ready` on two physical Vitas. Both then
+aborted while spawning racers because the direct boot loaded the race before
+the normal menu teardown had released the title level's object pool. Core-dump
+symbolication identified the failure in `track_setup_racers`; the Vita path now
+returns through the ordinary `mode_menu` transition so `unload_level_menu()`
+runs before level loading. Two physical Vitas now load and enter the fixed
+Ancient Lake race together.
+Runtime peer loss, transport recovery, and rollback startup/boundary failures
+now request a controlled return to the title screen and display a typed error
+for three seconds instead of tearing networking down inside simulation.
+
+An active LAN rollback race now replaces the retail blocking pause with a
+local presentation-only overlay; ordinary single-player pause behavior is
+unchanged. Either endpoint can continue or quit, while only the host can
+restart or open the 20-track selector. Host track-cursor updates are mirrored
+to the joiner, and restart, selected-track, and quit commands execute on a
+shared future simulation tick. Restart and track changes install a fresh match
+epoch before loading the race. Restart and track selection have been validated
+on two Vitas. Gameplay input is neutralized while either local overlay is open
+and remains neutral until the button used to close it is released.
+
+The joiner now captures local input from a dedicated physical-pad snapshot
+rather than from the controller array overwritten by canonical rollback input.
+This prevents a skipped hardware poll from feeding P1's last network frame back
+into P2's locally owned slot. Both endpoints use the original 3D character
+screen and track browser. Character unlocks, selection/confirmation revisions,
+the Adventure/Tracks choice, and the track cursor are host-authoritative.
+Adventure is shown as unavailable for LAN while the twenty standard Tracks
+courses are selectable. This frontend flow has been validated on two Vitas.
+
+Race completion now waits until the rollback input frame that first requested
+the post-race transition is fully received and reconciled. Rollback ownership
+is released before the presentation-only results UI allocates assets, and LAN
+post-race presentation switches to one full-screen viewport instead of leaving
+the joiner's lower split viewport unrendered. This finish-line fix still needs
+two-Vita hardware validation.
+
+The Vita LAN carrier now uses the existing bounded input-repair messages when
+three-frame redundancy cannot fill a gap. A receiver requests the missing run
+before it ages beyond the rollback window; the authoritative peer answers from
+its retained local history, and repaired samples re-enter through the same
+authenticated transport ingress as ordinary bundles. Requests are retried
+every eight authored ticks and responses are rate-limited per authored tick.
+Network races also retain the synchronized dinosaur/whale actors that the
+original split-screen path removed with its `NO_MULTIPLAYER` optimization.
+Other multiplayer-hidden decoration remains filtered.
+
 ## Known issues
 
 ### Remastered has reduced effects on Vita
@@ -432,6 +524,15 @@ The release's runtime source is committed `ec64a161`, plus version metadata
 only. The audio implementation matches the working hardware-tested build;
 unsuccessful experimental audio rewrites are not part of this release.
 
+### Ad-hoc does not automatically restore infrastructure Wi-Fi
+
+Entering the PSP-compatible ad-hoc system mode disconnects infrastructure
+Wi-Fi. Terminating and reinitializing NetCtl is not sufficient to reconnect it
+on the tested hardware, and the general NetCheck ad-hoc mode opens another
+ad-hoc dialog rather than restoring infrastructure service. To use `LAN` after
+`AD-HOC`, close the game and restore Wi-Fi with the Vita Settings connection
+test or reboot the system. This remains an open platform-integration issue.
+
 ### Verbose shader-compile diagnostics are off by default
 
 The logging added while chasing the issue above is gated behind a marker
@@ -454,13 +555,14 @@ checklist was removed because it no longer described the state of the port.
    identities and startup ordering before claiming a pop-in fix. Keep the
    confirmed audio baseline intact. Broader Remastered compatibility testing
    should retain the incompatible shader exclusions.
-2. Port upstream multiplayer to Vita in stages. First validate deterministic
-   two-instance races between a physical Vita and Vita3K, then choose between
-   direct Vita-to-Vita ad hoc/LAN transport and the upstream internet room
-   transport. A relay server remains a planned fallback for peer pairs that
-   cannot establish a direct route. This requires a Vita-native lobby surface,
-   network lifecycle/SSL integration, matching-version enforcement, and real
-   two-device testing; it is a roadmap item, not a current release claim.
+2. Hardware-validate LAN race controls on two Vitas: confirm either local
+   START opens only that endpoint's non-blocking overlay, the race continues
+   without desynchronizing, overlay button presses never reach the racer,
+   either player can quit cleanly, and peer force-close returns the survivor
+   to Press Start. Validate that each Vita controls only its own numbered racer
+   cursor, duplicate racers cannot be confirmed, unconfirm is synchronized,
+   and both selections enter the same race without cross-controlling the other
+   slot. Internet-room transport and relay fallback remain later work.
 3. Additional third-party controller and long-session reports remain useful
    for broad hardware coverage, but are not release blockers.
 4. If a native ROM-picker/launcher UI is wanted eventually (rather than the

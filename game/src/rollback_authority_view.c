@@ -16,6 +16,8 @@ extern Object *(*gCameraObjList)[20];
 extern Object *(*gRacers)[10];
 extern Object **gRacersByPosition;
 extern Object **gRacersByPort;
+extern s32 gNumRacers;
+extern s32 gCurrentRNGSeed;
 extern Object *(*gAINodes)[128];
 extern s8 (*gDrawbridgeTimers)[8];
 extern unk800179D0 *D_8011AFF4;
@@ -28,6 +30,190 @@ extern Particle *gRectangleParticleBuffer;
 extern Particle *gSpriteParticleBuffer;
 extern Particle *gLineParticleBuffer;
 extern PointParticle *gPointParticleBuffer;
+
+static void semantic_hash_u32(uint64_t *hash, uint32_t value) {
+    unsigned byte;
+    for (byte = 0u; byte < 4u; byte++) {
+        *hash ^= (uint8_t)(value >> (byte * 8u));
+        *hash *= UINT64_C(1099511628211);
+    }
+}
+
+static void semantic_hash_float(uint64_t *hash, f32 value) {
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    semantic_hash_u32(hash, bits);
+}
+
+uint64_t mdkr_object_rollback_semantic_digest(void) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    s32 index;
+
+    semantic_hash_u32(&hash, (uint32_t)gCurrentRNGSeed);
+    semantic_hash_u32(&hash, (uint32_t)gNumRacers);
+    if (gRacers == NULL) {
+        return hash;
+    }
+    for (index = 0; index < gNumRacers && index < 10; index++) {
+        Object *object = (*gRacers)[index];
+        Object_Racer *racer;
+        if (object == NULL || object->racer == NULL) {
+            semantic_hash_u32(&hash, UINT32_C(0xffffffff));
+            continue;
+        }
+        racer = object->racer;
+        semantic_hash_u32(&hash, (uint32_t)index);
+        semantic_hash_u32(&hash, (uint32_t)racer->racerIndex);
+        semantic_hash_u32(&hash, (uint32_t)racer->playerIndex);
+        semantic_hash_u32(&hash, (uint32_t)racer->vehicleID);
+        semantic_hash_float(&hash, object->trans.x_position);
+        semantic_hash_float(&hash, object->trans.y_position);
+        semantic_hash_float(&hash, object->trans.z_position);
+        semantic_hash_u32(
+            &hash, (uint32_t)(uint16_t)object->trans.rotation.x_rotation);
+        semantic_hash_u32(
+            &hash, (uint32_t)(uint16_t)object->trans.rotation.y_rotation);
+        semantic_hash_u32(
+            &hash, (uint32_t)(uint16_t)object->trans.rotation.z_rotation);
+        semantic_hash_float(&hash, object->x_velocity);
+        semantic_hash_float(&hash, object->y_velocity);
+        semantic_hash_float(&hash, object->z_velocity);
+        semantic_hash_float(&hash, racer->forwardVel);
+        semantic_hash_float(&hash, racer->velocity);
+        semantic_hash_float(&hash, racer->checkpoint_distance);
+        semantic_hash_u32(&hash, (uint32_t)racer->courseCheckpoint);
+        semantic_hash_u32(&hash, (uint32_t)racer->nextCheckpoint);
+        semantic_hash_u32(&hash, (uint32_t)racer->lap);
+        semantic_hash_u32(&hash, (uint32_t)racer->countLap);
+        semantic_hash_u32(&hash, (uint32_t)racer->raceFinished);
+        semantic_hash_u32(&hash, (uint32_t)racer->finishPosition);
+        semantic_hash_u32(&hash, (uint32_t)racer->groundedWheels);
+        semantic_hash_u32(&hash, (uint32_t)racer->drift_direction);
+        semantic_hash_float(&hash, racer->buoyancy);
+        semantic_hash_u32(&hash, (uint32_t)racer->attackType);
+        semantic_hash_u32(&hash, (uint32_t)racer->spinout_timer);
+        semantic_hash_u32(&hash, (uint32_t)racer->squish_timer);
+        semantic_hash_u32(&hash, (uint32_t)racer->bubbleTrapTimer);
+        semantic_hash_u32(&hash, (uint32_t)racer->shieldTimer);
+        semantic_hash_u32(&hash, (uint32_t)racer->unk18C);
+        semantic_hash_u32(&hash, (uint32_t)racer->unk18A);
+        semantic_hash_u32(&hash, (uint32_t)racer->unk1D1);
+        semantic_hash_u32(&hash, (uint32_t)racer->unk1C6);
+        semantic_hash_u32(&hash, (uint32_t)racer->unk206);
+        semantic_hash_u32(&hash, (uint32_t)racer->unk1F1);
+        semantic_hash_u32(&hash, (uint32_t)racer->bananas);
+        semantic_hash_u32(&hash, (uint32_t)racer->boost_sound);
+    }
+    for (index = 0; index < gObjectCount; index++) {
+        Object *object = gObjPtrList[index];
+        Object_Weapon *weapon;
+        s32 owner = -1;
+        s32 target = -1;
+        s32 racerIndex;
+        if (object == NULL ||
+            (object->behaviorId != BHV_WEAPON &&
+             object->behaviorId != BHV_WEAPON_2) ||
+            object->weapon == NULL) {
+            continue;
+        }
+        weapon = object->weapon;
+        for (racerIndex = 0;
+             racerIndex < gNumRacers && racerIndex < 10; racerIndex++) {
+            if ((*gRacers)[racerIndex] == weapon->owner) {
+                owner = racerIndex;
+            }
+            if ((*gRacers)[racerIndex] == weapon->target) {
+                target = racerIndex;
+            }
+        }
+        semantic_hash_u32(&hash, UINT32_C(0x5745504e));
+        semantic_hash_u32(&hash, (uint32_t)index);
+        semantic_hash_u32(&hash, (uint32_t)object->objectID);
+        semantic_hash_float(&hash, object->trans.x_position);
+        semantic_hash_float(&hash, object->trans.y_position);
+        semantic_hash_float(&hash, object->trans.z_position);
+        semantic_hash_float(&hash, object->x_velocity);
+        semantic_hash_float(&hash, object->y_velocity);
+        semantic_hash_float(&hash, object->z_velocity);
+        semantic_hash_u32(
+            &hash, (uint32_t)object->properties.projectile.timer);
+        semantic_hash_u32(
+            &hash, (uint32_t)object->properties.projectile.unk4);
+        semantic_hash_u32(&hash, (uint32_t)weapon->weaponID);
+        semantic_hash_u32(&hash, (uint32_t)weapon->checkpoint);
+        semantic_hash_float(&hash, weapon->checkpointDist);
+        semantic_hash_float(&hash, weapon->forwardVel);
+        semantic_hash_u32(&hash, (uint32_t)owner);
+        semantic_hash_u32(&hash, (uint32_t)target);
+    }
+    return hash;
+}
+
+static uint32_t semantic_fold(uint64_t hash) {
+    return (uint32_t)(hash ^ (hash >> 32));
+}
+
+uint32_t mdkr_object_rollback_racer_digest(s32 index) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    Object *object;
+    Object_Racer *racer;
+    if (gRacers == NULL || index < 0 || index >= gNumRacers || index >= 10) {
+        return 0u;
+    }
+    object = (*gRacers)[index];
+    if (object == NULL || object->racer == NULL) {
+        return UINT32_C(0xffffffff);
+    }
+    racer = object->racer;
+    semantic_hash_u32(&hash, (uint32_t)racer->playerIndex);
+    semantic_hash_u32(&hash, (uint32_t)racer->vehicleID);
+    semantic_hash_float(&hash, object->trans.x_position);
+    semantic_hash_float(&hash, object->trans.y_position);
+    semantic_hash_float(&hash, object->trans.z_position);
+    semantic_hash_u32(
+        &hash, (uint32_t)(uint16_t)object->trans.rotation.y_rotation);
+    semantic_hash_float(&hash, object->x_velocity);
+    semantic_hash_float(&hash, object->y_velocity);
+    semantic_hash_float(&hash, object->z_velocity);
+    semantic_hash_float(&hash, racer->forwardVel);
+    semantic_hash_float(&hash, racer->velocity);
+    semantic_hash_u32(&hash, (uint32_t)racer->courseCheckpoint);
+    semantic_hash_u32(&hash, (uint32_t)racer->lap);
+    semantic_hash_u32(&hash, (uint32_t)racer->bananas);
+    semantic_hash_u32(&hash, (uint32_t)racer->attackType);
+    semantic_hash_u32(&hash, (uint32_t)racer->spinout_timer);
+    return semantic_fold(hash);
+}
+
+uint32_t mdkr_object_rollback_world_digest(void) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    s32 index;
+    semantic_hash_u32(&hash, (uint32_t)gObjectCount);
+    if (gObjPtrList == NULL) {
+        return semantic_fold(hash);
+    }
+    for (index = 0; index < gObjectCount; index++) {
+        Object *object = gObjPtrList[index];
+        if (object == NULL) {
+            semantic_hash_u32(&hash, UINT32_C(0xffffffff));
+            continue;
+        }
+        semantic_hash_u32(&hash, (uint32_t)(uint16_t)object->behaviorId);
+        semantic_hash_u32(&hash, (uint32_t)(uint16_t)object->objectID);
+        semantic_hash_float(&hash, object->trans.x_position);
+        semantic_hash_float(&hash, object->trans.y_position);
+        semantic_hash_float(&hash, object->trans.z_position);
+    }
+    return semantic_fold(hash);
+}
+
+uint32_t mdkr_object_rollback_object_count(void) {
+    return (uint32_t)gObjectCount;
+}
+
+uint32_t mdkr_object_rollback_racer_count(void) {
+    return (uint32_t)gNumRacers;
+}
 
 s32 mdkr_object_rollback_view(MdkrObjectRollbackView *view) {
     if (view == NULL) {

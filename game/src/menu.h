@@ -542,6 +542,10 @@ s32 menu_logo_screen_loop(s32 updateRate);
 void init_title_screen_variables(void);
 void menu_title_screen_init(void);
 void titlescreen_free(void);
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+void menu_vita_lan_show_failure(const char *message);
+void menu_vita_lan_abort_race_presentation(void);
+#endif
 void menu_options_init(void);
 void optionscreen_render(s32 updateRate);
 void optionscreen_free(void);
@@ -638,7 +642,8 @@ s8 get_player_character(s32 controllerIndex);
 s16 menu_character_select_donor(s32 rosterIndex);
 void enable_tracks_mode(s32 boolean);
 s32 is_in_tracks_mode(void);
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
 void menu_online_versus_race_setup(s32 trackId, s32 canonicalPlayers);
 #endif
 void set_magic_code_flags(s32 flags);

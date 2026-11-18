@@ -394,6 +394,29 @@ if(VITA)
     set(MDKR_WEBGPU_BACKEND OFF CACHE BOOL "" FORCE)
     set(MDKR_APP OFF CACHE BOOL "" FORCE)
     set(MDKR_NATIVE_PHONE_PARTY OFF CACHE BOOL "" FORCE)
+    option(MDKR_ENABLE_VITA_ADHOC
+        "Build the experimental Vita local ad-hoc link" ON)
+    option(MDKR_ENABLE_VITA_LAN
+        "Build the experimental Vita local LAN room link" ON)
+    option(MDKR_ENABLE_VITA_RELAY
+        "Build the Vita online relay room client" ON)
+    set(MDKR_VITA_RELAY_HOST "10.1.1.146" CACHE STRING
+        "IPv4 address of the Vita online relay")
+    set(MDKR_VITA_RELAY_PORT "8080" CACHE STRING
+        "TCP port of the Vita online relay")
+    set(MDKR_VITA_RELAY_PATH "/relay" CACHE STRING
+        "WebSocket path of the Vita online relay")
+    if(NOT MDKR_VITA_RELAY_HOST MATCHES "^[0-9.]+$")
+        message(FATAL_ERROR "MDKR_VITA_RELAY_HOST must be an IPv4 address")
+    endif()
+    if(NOT MDKR_VITA_RELAY_PORT MATCHES "^[1-9][0-9]*$" OR
+       MDKR_VITA_RELAY_PORT GREATER 65535)
+        message(FATAL_ERROR "MDKR_VITA_RELAY_PORT must be in [1, 65535]")
+    endif()
+    if(NOT MDKR_VITA_RELAY_PATH MATCHES "^/[A-Za-z0-9_/-]*$")
+        message(FATAL_ERROR
+            "MDKR_VITA_RELAY_PATH must be an absolute HTTP path")
+    endif()
     option(MDKR_VITA_IMGUI_OVERLAY
         "Build the VitaGL ImGui Save Editor overlay" ON)
     if(MDKR_VITA_IMGUI_OVERLAY)
@@ -527,6 +550,11 @@ if(MDKR_ENABLE_ONLINE_BETA)
         ${CMAKE_SOURCE_DIR}/game/src/online/online_results.c    # native online results/standings
         ${CMAKE_SOURCE_DIR}/game/src/online/online_ceremony.c   # native online champion ceremony
         ${CMAKE_SOURCE_DIR}/game/src/online/online_race_pause.c) # non-blocking online pause overlay
+elseif(VITA AND MDKR_ENABLE_VITA_LAN)
+    list(APPEND GAME_SOURCES
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_race_boot.c
+        ${CMAKE_SOURCE_DIR}/game/src/online/online_race_pause.c
+        ${CMAKE_SOURCE_DIR}/game/src/online/vita_lan_charselect.c)
 endif()
 
 # Native platform layer (this project's own M1 code). Listed explicitly rather
@@ -603,6 +631,7 @@ set(PLATFORM_SOURCES
     ${CMAKE_SOURCE_DIR}/platform/sim_sched.c        # exact fixed-authority accumulator
     ${CMAKE_SOURCE_DIR}/platform/host_frame_driver.c # exact host-time -> fixed tick tickets
     ${CMAKE_SOURCE_DIR}/platform/input_tick_queue.c  # bounded host edges -> tick pad state
+    ${CMAKE_SOURCE_DIR}/platform/mod_texture_preload.c # per-level HD preload list
     ${CMAKE_SOURCE_DIR}/platform/pad_router.c        # one-owner local/remote controller ports
     ${CMAKE_SOURCE_DIR}/platform/party/party_protocol.c # fixed, validated Phone Party wire codec
     ${CMAKE_SOURCE_DIR}/platform/party/remote_pad.c  # bounded history/dedupe/timeout core
@@ -701,6 +730,24 @@ if(VITA)
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text.c)
     list(APPEND PLATFORM_SOURCES
         ${CMAKE_SOURCE_DIR}/platform/fast3d/gfx_character_text_vita.c)
+    if(MDKR_ENABLE_VITA_ADHOC OR MDKR_ENABLE_VITA_LAN OR
+       MDKR_ENABLE_VITA_RELAY)
+        list(APPEND PLATFORM_SOURCES
+            ${CMAKE_SOURCE_DIR}/platform/vita_network_runtime.c)
+    endif()
+    if(MDKR_ENABLE_VITA_ADHOC)
+        list(APPEND PLATFORM_SOURCES
+            ${CMAKE_SOURCE_DIR}/platform/vita_adhoc.c)
+    endif()
+    if(MDKR_ENABLE_VITA_LAN)
+        list(APPEND PLATFORM_SOURCES
+            ${CMAKE_SOURCE_DIR}/platform/vita_lan.c)
+    endif()
+    if(MDKR_ENABLE_VITA_RELAY)
+        list(APPEND PLATFORM_SOURCES
+            ${CMAKE_SOURCE_DIR}/platform/vita_relay.c
+            ${CMAKE_SOURCE_DIR}/platform/vita_relay_protocol.c)
+    endif()
     if(MDKR_VITA_PROFILER)
         list(APPEND PLATFORM_SOURCES
             ${MDKR_VITAPROFILER_DIR}/src/vitaprofiler.c
@@ -915,6 +962,21 @@ if(VITA AND MDKR_VITA_IMGUI_OVERLAY)
         ${CMAKE_SOURCE_DIR}/third_party/imgui-vita)
     target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VITA_IMGUI_OVERLAY=1)
 endif()
+if(VITA AND MDKR_ENABLE_VITA_ADHOC)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE
+        MDKR_ENABLE_VITA_ADHOC=1)
+endif()
+if(VITA AND MDKR_ENABLE_VITA_LAN)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE
+        MDKR_ENABLE_VITA_LAN=1)
+endif()
+if(VITA AND MDKR_ENABLE_VITA_RELAY)
+    target_compile_definitions(${MDKR_TARGET} PRIVATE
+        MDKR_ENABLE_VITA_RELAY=1
+        MDKR_VITA_RELAY_HOST="${MDKR_VITA_RELAY_HOST}"
+        MDKR_VITA_RELAY_PORT=${MDKR_VITA_RELAY_PORT}
+        MDKR_VITA_RELAY_PATH="${MDKR_VITA_RELAY_PATH}")
+endif()
 mdkr_add_legacy_game_quote_includes(${MDKR_TARGET})
 
 # --- Compile definitions (PLAN §8) ---------------------------------------
@@ -956,7 +1018,7 @@ endif()
 # CFBundleShortVersionString, which macos/Scripts/build_app_bundle.sh stamps
 # from this same value via PlistBuddy. Kept as its own standalone statement
 # (not folded into the block above) so it stays a one-line, low-conflict diff.
-set(MDKR_VERSION "1.7.2" CACHE STRING "mdkr64 release version (semver)")
+set(MDKR_VERSION "1.7.3" CACHE STRING "mdkr64 release version (semver)")
 target_compile_definitions(${MDKR_TARGET} PRIVATE MDKR_VERSION_STRING="${MDKR_VERSION}")
 if(VITA)
     # Activates the GLES-safe branches gfx_opengl.c already carries for the
@@ -1200,6 +1262,15 @@ if(NOT EMSCRIPTEN)
             # in libstdc++ automatically the way g++ would. Matches
             # Lighthouse's Makefile.vita (LIBS += -lstdc++).
              stdc++)
+        if(MDKR_ENABLE_VITA_ADHOC OR MDKR_ENABLE_VITA_LAN OR
+           MDKR_ENABLE_VITA_RELAY)
+            target_link_libraries(${MDKR_TARGET} PRIVATE
+                SceNet_stub SceNetCtl_stub)
+        endif()
+        if(MDKR_ENABLE_VITA_ADHOC)
+            target_link_libraries(${MDKR_TARGET} PRIVATE
+                ScePspnetAdhoc_stub)
+        endif()
         if(MDKR_VITA_DEBUGGER)
             foreach(MDKR_DEBUGGER_FILE IN ITEMS
                     "${MDKR_VITADEBUGGER_DIR}/uvdb.h"
@@ -3340,6 +3411,22 @@ if(WIN32)
             COMPILE_DEFINITIONS "MDKR_VER_CSV=${MDKR_VER_CSV};MDKR_VER_STR=${MDKR_VER_STR}"
             OBJECT_DEPENDS "${MDKR_MANIFEST_PATH}")
     endif()
+endif()
+
+if(BUILD_TESTING AND NOT VITA)
+    add_executable(mdkr_vita_relay_protocol_test
+        ${CMAKE_SOURCE_DIR}/tests/test_vita_relay_protocol.c
+        ${CMAKE_SOURCE_DIR}/platform/vita_relay_protocol.c)
+    target_include_directories(mdkr_vita_relay_protocol_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/platform)
+    if(MSVC)
+        target_compile_options(mdkr_vita_relay_protocol_test PRIVATE /W4 /WX)
+    else()
+        target_compile_options(mdkr_vita_relay_protocol_test PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    endif()
+    add_test(NAME vita_relay_protocol
+        COMMAND mdkr_vita_relay_protocol_test)
 endif()
 
 # ==========================================================================

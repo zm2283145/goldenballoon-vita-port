@@ -935,6 +935,23 @@ void sndp_stop_rollback_voice(
     if (handle->userHandle == handlePtr) handle->userHandle = NULL;
     if (handlePtr != NULL && *handlePtr == handle) *handlePtr = NULL;
 }
+
+/** TRUE iff handle is a live allocated voice whose back-pointer is slot.
+ * Never dereferences handle unless it is found on the allocated list, so a
+ * stale pointer restored from a rollback snapshot is safe to test. */
+s32 sndp_handle_owned_by(SoundHandle handle, SoundHandle *slot) {
+    ALSoundState *state;
+
+    if (handle == NULL || slot == NULL) {
+        return FALSE;
+    }
+    for (state = gSoundStateLists.allocHead; state != NULL; state = state->next) {
+        if (state == handle) {
+            return state->state != SOUND_STATE_NONE && state->userHandle == slot;
+        }
+    }
+    return FALSE;
+}
 #endif
 
 /**
@@ -1092,6 +1109,16 @@ static void sndp_stop_raw(ALSoundState *state) {
     alEvent.common.state = state;
     if (state != NULL) {
         state->flags &= ~SOUND_FLAG_RETRIGGER;
+#ifdef NATIVE_PORT
+        /* Vehicle loops publish volume, pitch and pan every authored frame.
+         * On slower audio backends those obsolete zero-delay events can fill
+         * the fixed queue and prevent the stop that retires the loop. */
+        sndp_remove_events(
+            &gSoundPlayerPtr->evtq, state,
+            AL_SNDP_PAN_EVT | AL_SNDP_VOL_EVT | AL_SNDP_PITCH_EVT |
+                AL_SNDP_FX_EVT | AL_SNDP_GROUP_VOL_EVT |
+                AL_SNDP_GLOBAL_VOL_EVT | AL_SNDP_STOP_EVT);
+#endif
         alEvtqPostEvent(&gSoundPlayerPtr->evtq, (ALEvent *) &alEvent, 0);
     } else {
         // From JFG
@@ -1168,6 +1195,12 @@ static void sndp_set_param_raw(
     evt.common.state = soundMask;
     evt.common.param = paramValue;
     if (soundMask != NULL) {
+#ifdef NATIVE_PORT
+        /* Parameter events are state replacement, not an ordered history.
+         * Keep only the newest pending value so continuously updated engine,
+         * tyre and brake loops cannot backlog the fixed sound event queue. */
+        sndp_remove_events(&gSoundPlayerPtr->evtq, soundMask, (u16)type);
+#endif
         alEvtqPostEvent(&gSoundPlayerPtr->evtq, (ALEvent *) &evt, 0);
     } else {
         // From JFG

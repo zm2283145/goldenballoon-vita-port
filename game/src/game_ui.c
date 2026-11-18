@@ -29,6 +29,7 @@
 #include "taj_physics.h"
 #include "taj_visual.h"
 #include "net/net_roster_runtime.h"
+#include "rollback/rollback_game_runtime.h"
 #include "modern_character_runtime.h"
 #include "video_config.h"
 #include <stdio.h>
@@ -53,6 +54,8 @@ static u64 sCustomMinimapRevisions[MDKR_MODERN_CHARACTER_PLAYERS];
 #else
 #define hud_rand_range rand_range
 #define hud_presentation_viewport_layout() gHUDNumPlayers
+#define hud_online_single_view() FALSE
+#define hud_display_players() gHUDNumPlayers
 #endif
 
 /************ .data ************/
@@ -205,6 +208,9 @@ u8 gShowCourseDirections = TRUE;
 u8 D_800E2794[4][4] = { { 1, 1, 1, 1 }, { 2, 2, 2, 2 }, { 2, 2, 2, 2 }, { 2, 2, 2, 2 } };
 
 s8 gHudToggleSettings[4] = { 1, 1, 1, 1 };
+#ifndef NATIVE_PORT
+#define HUD_MINIMAP_TOGGLE gHudToggleSettings[gHUDNumPlayers]
+#endif
 
 s8 gPrevToggleSetting = 1;
 
@@ -305,6 +311,49 @@ static s32 hud_presentation_viewport_layout(void) {
     }
     return gHUDNumPlayers;
 }
+
+/* Draw-only visibility layout. An online endpoint with one local view keeps
+ * the canonical N-player HUD state but shows the 1P readouts (position
+ * suffix, lap count, race time) for its local racer. */
+static s32 hud_online_single_view(void) {
+    return mdkr_net_roster_runtime_active() &&
+           hud_presentation_viewport_layout() == VIEWPORT_LAYOUT_1_PLAYER;
+}
+
+static s32 hud_display_players(void) {
+    return hud_online_single_view() ? ONE_PLAYER : gHUDNumPlayers;
+}
+
+/* The R-C minimap on/off is a per-endpoint presentation choice. Online, every
+ * endpoint runs every canonical seat's input through hud_tick, so writing the
+ * shared gHudToggleSettings let one player's press hide the other player's
+ * minimap (and resimulation could replay the edge and flip it back). Online
+ * endpoints instead keep a local copy that only their own seat's live press
+ * flips; gHudToggleSettings keeps its canonical defaults, so the simulation
+ * readers of hud_setting() (3-view TT camera/sort/visibility) are unchanged.
+ * Offline the slot is gHudToggleSettings itself, preserving ROM behaviour. */
+static s8 sHudLocalToggleSettings[4] = { 1, 1, 1, 1 };
+static s8 sHudLocalPrevToggleSetting = 1;
+
+static s32 hud_minimap_toggle_is_local(void) {
+    return mdkr_net_roster_runtime_active();
+}
+
+static s8 *hud_minimap_toggle_slot(void) {
+    return hud_minimap_toggle_is_local() ? &sHudLocalToggleSettings[gHUDNumPlayers]
+                                         : &gHudToggleSettings[gHUDNumPlayers];
+}
+
+static s32 hud_minimap_toggle_owned(const Object_Racer *racer) {
+    uint8_t localSeat;
+
+    if (!hud_minimap_toggle_is_local()) {
+        return TRUE;
+    }
+    return mdkr_rollback_game_runtime_presentation_allowed() && racer->playerIndex >= 0 &&
+           mdkr_net_roster_runtime_canonical_to_local((unsigned) racer->playerIndex, &localSeat);
+}
+#define HUD_MINIMAP_TOGGLE (*hud_minimap_toggle_slot())
 
 static s32 hud_element_index(const HudElement *element) {
     uintptr_t address;
@@ -1210,8 +1259,15 @@ void hud_init_element(void) {
     if (level_type() & RACETYPE_CHALLENGE) {
         gPrevToggleSetting = gHudToggleSettings[1];
         gHudToggleSettings[1] = 0;
+#ifdef NATIVE_PORT
+        sHudLocalPrevToggleSetting = sHudLocalToggleSettings[1];
+        sHudLocalToggleSettings[1] = 0;
+#endif
     } else {
         gHudToggleSettings[1] = gPrevToggleSetting;
+#ifdef NATIVE_PORT
+        sHudLocalToggleSettings[1] = sHudLocalPrevToggleSetting;
+#endif
     }
 }
 
@@ -1753,9 +1809,10 @@ static void hud_player_tick(Object *obj, s32 updateRate) {
             sound_play((SOUND_TING_HIGHEST - (D_800E2794[gHUDNumPlayers][racer->playerIndex] == 0)), NULL);
         }
         if (input_pressed(gHudController) & R_CBUTTONS && racer->raceFinished == FALSE && gHudRaceStart &&
-            gMinimapOpacity == 0) {
-            gHudToggleSettings[gHUDNumPlayers] = 1 - gHudToggleSettings[gHUDNumPlayers];
-            if (gHudToggleSettings[gHUDNumPlayers] == 0) {
+            gMinimapOpacity == 0 && hud_minimap_toggle_owned(racer)) {
+            s8 *minimapToggle = hud_minimap_toggle_slot();
+            *minimapToggle = 1 - *minimapToggle;
+            if (*minimapToggle == 0) {
                 sound_play(SOUND_TING_LOW, NULL);
             } else {
                 sound_play(SOUND_TING_HIGH, NULL);
@@ -3320,7 +3377,7 @@ void hud_speedometre(Object *obj, UNUSED s32 updateRate) {
                             ((vel - gCurrentHud->entry[HUD_SPEEDOMETRE_ARROW].rotation.z_rotation) / 8);
                     }
                 }
-                if (gHudToggleSettings[gHUDNumPlayers] == 0) {
+                if (HUD_MINIMAP_TOGGLE == 0) {
                     if (gMinimapXlu & 2) {
                         opacity = 255.0f - ((gMinimapOpacity * 255.0f) / gMinimapOpacityTarget);
                     } else {
@@ -3465,11 +3522,11 @@ void hud_bananas(Object_Racer *racer, s32 updateRate) {
     s32 temp_lo;
     u8 prevSprite;
     if (racer->playerIndex == PLAYER_COMPUTER ||
-        (((gHUDNumPlayers < TWO_PLAYERS || D_800E2794[gHUDNumPlayers][racer->playerIndex] == 2 ||
+        (((hud_display_players() < TWO_PLAYERS || D_800E2794[gHUDNumPlayers][racer->playerIndex] == 2 ||
            gHudLevelHeader->race_type == RACETYPE_CHALLENGE_BANANAS ||
            gHudLevelHeader->race_type == RACETYPE_CHALLENGE_BATTLE) &&
           racer->raceFinished == FALSE) &&
-         (gHUDNumPlayers < TWO_PLAYERS || racer->lap < 1 || mdkr_hud_current_lap_time(racer, 180) >= 180 ||
+         (hud_display_players() < TWO_PLAYERS || racer->lap < 1 || mdkr_hud_current_lap_time(racer, 180) >= 180 ||
           gHudLevelHeader->race_type & RACETYPE_CHALLENGE))) {
         hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_BANANA_COUNT_X]);
         bananas = racer->bananas;
@@ -3778,9 +3835,9 @@ void hud_race_position(Object_Racer *racer, s32 updateRate) {
  */
 void hud_lap_count(Object_Racer *racer, s32 updateRate) {
     if (racer->raceFinished == FALSE &&
-        (gHUDNumPlayers <= ONE_PLAYER || racer->lap <= 0 || mdkr_hud_current_lap_time(racer, 180) >= 180) &&
-        (gHUDNumPlayers <= ONE_PLAYER || D_800E2794[gHUDNumPlayers][racer->playerIndex] == 3)) {
-        if (gHudLevelHeader->laps == (0, racer->countLap + 1) && gHUDNumPlayers < THREE_PLAYERS) {
+        (hud_display_players() <= ONE_PLAYER || racer->lap <= 0 || mdkr_hud_current_lap_time(racer, 180) >= 180) &&
+        (hud_display_players() <= ONE_PLAYER || D_800E2794[gHUDNumPlayers][racer->playerIndex] == 3)) {
+        if (gHudLevelHeader->laps == (0, racer->countLap + 1) && hud_display_players() < THREE_PLAYERS) {
             gCurrentHud->entry[HUD_LAP_COUNT_FLAG].lapCountFlag.visualCounter += updateRate;
             if (gCurrentHud->entry[HUD_LAP_COUNT_FLAG].lapCountFlag.visualCounter > 6) {
                 gCurrentHud->entry[HUD_LAP_COUNT_FLAG].spriteOffset++;
@@ -4128,6 +4185,50 @@ void hud_finish_position(Object_Racer *racer) {
     }
 }
 
+#ifdef NATIVE_PORT
+/* Online, the first presented frame with raceFinished set can be a predicted
+ * frame; a later rollback may correct finishPosition and lap_times. The ROM
+ * latches the placing sprite and the times only once (status 0), so a close
+ * finish could keep showing a mispredicted "1st" on both endpoints. Re-derive
+ * those presentation fields from the current (corrected) racer each frame. */
+static void hud_race_finish_multiplayer_resync(const Object_Racer *racer) {
+    LevelHeader *header;
+    s32 lap;
+    s32 total;
+    s32 fastest;
+    s32 minutes;
+    s32 seconds;
+    s32 hundredths;
+
+    if (racer->finishPosition <= 0) {
+        return;
+    }
+    gCurrentHud->entry[HUD_CHALLENGE_FINISH_POS_2].spriteOffset =
+        racer->finishPosition < 4 ? racer->finishPosition - 1 : 3;
+    gCurrentHud->entry[HUD_CHALLENGE_FINISH_POS_1].spriteOffset = racer->finishPosition - 1;
+    if (gNumActivePlayers == 1) {
+        return;
+    }
+    header = level_header();
+    total = 0;
+    fastest = racer->lap_times[0];
+    for (lap = 0; lap < header->laps && lap < (s32) ARRAY_COUNT(racer->lap_times); lap++) {
+        total += racer->lap_times[lap];
+        if (racer->lap_times[lap] < fastest) {
+            fastest = racer->lap_times[lap];
+        }
+    }
+    get_timestamp_from_frames(fastest, &minutes, &seconds, &hundredths);
+    gCurrentHud->entry[HUD_LAP_TIME_TEXT].timer.minutes = minutes;
+    gCurrentHud->entry[HUD_LAP_TIME_TEXT].timer.seconds = seconds;
+    gCurrentHud->entry[HUD_LAP_TIME_TEXT].timer.hundredths = hundredths;
+    get_timestamp_from_frames(total, &minutes, &seconds, &hundredths);
+    gCurrentHud->entry[HUD_RACE_TIME_NUMBER].timer.minutes = minutes;
+    gCurrentHud->entry[HUD_RACE_TIME_NUMBER].timer.seconds = seconds;
+    gCurrentHud->entry[HUD_RACE_TIME_NUMBER].timer.hundredths = hundredths;
+}
+#endif
+
 void hud_race_finish_multiplayer(Object_Racer *racer, s32 updateRate) {
     UNUSED s32 *var_a0;
     UNUSED s32 var_t0;
@@ -4162,6 +4263,12 @@ void hud_race_finish_multiplayer(Object_Racer *racer, s32 updateRate) {
         gAdventurePlayerFinish = TRUE;
     }
 
+#ifdef NATIVE_PORT
+    if (mdkr_net_roster_runtime_active() &&
+        gCurrentHud->entry[HUD_CHALLENGE_FINISH_POS_1].raceFinishPos.status != 0) {
+        hud_race_finish_multiplayer_resync(racer);
+    }
+#endif
     switch (gCurrentHud->entry[HUD_CHALLENGE_FINISH_POS_1].raceFinishPos.status) {
         case 0:
             if (!(raceType & RACETYPE_CHALLENGE_BATTLE)) {
@@ -4712,9 +4819,10 @@ void hud_race_time(Object_Racer *racer, s32 updateRate) {
     s32 countingDown;
     s32 timerHideCounter;
     s32 timerX;
+    s32 timerY;
 
-    if (!(gHUDNumPlayers != ONE_PLAYER && D_800E2794[gHUDNumPlayers][racer->playerIndex] != 1) ||
-        (gHUDNumPlayers > ONE_PLAYER && racer->lap > 0 &&
+    if (!(hud_display_players() != ONE_PLAYER && D_800E2794[gHUDNumPlayers][racer->playerIndex] != 1) ||
+        (hud_display_players() > ONE_PLAYER && racer->lap > 0 &&
          mdkr_hud_current_lap_time(racer, 180) < 180)) {
         if (racer->raceFinished == FALSE) {
             timerHideCounter = gCurrentHud->entry[HUD_RACE_TIME_LABEL].raceTimeLabel.hideTimer + 127;
@@ -4736,7 +4844,7 @@ void hud_race_time(Object_Racer *racer, s32 updateRate) {
                 gCurrentHud->entry[HUD_RACE_TIME_LABEL].raceTimeLabel.hideTimer = -127;
                 timerHideCounter = 0;
             }
-            if (gHUDNumPlayers == ONE_PLAYER) {
+            if (hud_display_players() == ONE_PLAYER) {
                 hud_element_render(&gHudDL, &gHudMtx, &gHudVtx, &gCurrentHud->entry[HUD_RACE_TIME_LABEL]);
             }
             if (normalise_time(36000) < stopwatchTimer) {
@@ -4755,7 +4863,7 @@ void hud_race_time(Object_Racer *racer, s32 updateRate) {
                     return;
                 } else {
                     if (gHideRaceTimer) {
-                        if (gHUDNumPlayers == ONE_PLAYER) {
+                        if (hud_display_players() == ONE_PLAYER) {
                             sound_play(SOUND_HUD_LAP_TICK, NULL);
                         }
                         gHideRaceTimer = FALSE;
@@ -4772,19 +4880,27 @@ void hud_race_time(Object_Racer *racer, s32 updateRate) {
             }
 
             timerX = gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.x;
+            timerY = gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.y;
 #ifdef NATIVE_PORT
+            {
+                /* Transient timer glyphs bypass hud_element_render's endpoint
+                 * reflow (no element identity), so rebase the anchor here. */
+                HudElement endpointTimer;
+                if (hud_endpoint_reflow_element(&gCurrentHud->entry[HUD_RACE_TIME_NUMBER], &endpointTimer)) {
+                    timerX = endpointTimer.pos.x;
+                    timerY = endpointTimer.pos.y;
+                }
+            }
             /* hud_timer_render builds transient glyphs, so it cannot recover
              * HUD_RACE_TIME_NUMBER's right anchor from pointer identity. Its
              * texture glyphs already receive the positive-canvas center shift
              * in hud_element_render; add the remaining anchor margin here. */
             timerX += (s32)hud_widescreen_offset(MDKR_HUD_ANCHOR_RIGHT);
 #endif
-            if (gNumActivePlayers == 1) {
-                hud_timer_render(timerX,
-                                 gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.y, minutes, seconds, hundredths, FALSE);
+            if (gNumActivePlayers == 1 || hud_online_single_view()) {
+                hud_timer_render(timerX, timerY, minutes, seconds, hundredths, FALSE);
             } else {
-                hud_timer_render(timerX,
-                                 gCurrentHud->entry[HUD_RACE_TIME_NUMBER].pos.y, minutes, seconds, hundredths, TRUE);
+                hud_timer_render(timerX, timerY, minutes, seconds, hundredths, TRUE);
             }
             gDPSetPrimColor(gHudDL++, 0, 0, 255, 255, 255, 255);
         }
@@ -4972,7 +5088,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
     gHudMtx = *mtx;
     gHudVtx = *vtx;
     if (gHudLevelHeader->race_type == RACETYPE_CHALLENGE_EGGS) {
-        if (gNumActivePlayers == 2 && gHudToggleSettings[gHUDNumPlayers] == 0) {
+        if (gNumActivePlayers == 2 && HUD_MINIMAP_TOGGLE == 0) {
             hud_draw_eggs(NULL, updateRate);
             rendermode_reset(&gHudDL);
         } else {
@@ -5010,7 +5126,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
         }
     } else if (gHudLevelHeader->race_type == RACETYPE_CHALLENGE_BATTLE) {
         // Show life counter and icons in 2 player.
-        if (gNumActivePlayers == 2 && gHudToggleSettings[gHUDNumPlayers] == 0) {
+        if (gNumActivePlayers == 2 && HUD_MINIMAP_TOGGLE == 0) {
             cam_set_sprite_anim_mode(SPRITE_ANIM_FRAME_INDEX);
             sprite_opaque(FALSE);
             hud_mtx_ortho(&gHudDL, &gHudMtx);
@@ -5101,7 +5217,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
             }
         }
     } else if (gHudLevelHeader->race_type == RACETYPE_CHALLENGE_BANANAS) {
-        if (gNumActivePlayers == 2 && gHudToggleSettings[gHUDNumPlayers] == 0) {
+        if (gNumActivePlayers == 2 && HUD_MINIMAP_TOGGLE == 0) {
             temp_s0_2 = gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].pos.x;
             temp_s1_2 = gCurrentHud->entry[HUD_CHALLENGE_PORTRAIT].pos.y;
             temp_s3 = gCurrentHud->entry[HUD_TREASURE_METRE].pos.x;
@@ -5176,7 +5292,7 @@ void hud_render_general(Gfx **dList, Mtx **mtx, Vertex **vtx, s32 updateRate) {
     if ((gHUDNumPlayers == THREE_PLAYERS && is_postrace_viewport_active()) || check_if_showing_cutscene_camera() ||
         sp113) {
         goto test;
-    } else if (gHudToggleSettings[gHUDNumPlayers] != 1) {
+    } else if (HUD_MINIMAP_TOGGLE != 1) {
     test:
         return;
     }

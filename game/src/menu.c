@@ -19,6 +19,22 @@
 #include "taj_mod_state_file.h"
 #include "video_config.h"
 #include "net/net_roster_runtime.h"
+#include "rollback/rollback_game_runtime.h"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_ADHOC)
+#include "vita_adhoc.h"
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+#include "vita_lan.h"
+#include "online/vita_lan_charselect.h"
+#include "online/online_race_boot.h"
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_RELAY)
+#include "vita_relay.h"
+#endif
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_LAN) || defined(MDKR_ENABLE_VITA_RELAY))
+#define MDKR_VITA_MULTIPLAYER_TITLE_INDEX 2
+#endif
 #ifndef MDKR_ADVENTURE_PARTY_OMIT
 /* AP-06 admission/session adapters. These headers (and every call to them) live
  * behind NATIVE_PORT && !MDKR_ADVENTURE_PARTY_OMIT so the OMIT build and the
@@ -45,6 +61,8 @@ extern int g_frameCounter;
 #include "asset_enums.h"
 #include "asset_loading.h"
 #include "audio.h"
+#include "audio_spatial.h"
+#include "audio_vehicle.h"
 #include "audiosfx.h"
 #include "camera.h"
 #include "common.h"
@@ -803,7 +821,147 @@ MenuElement *gTrophyRankingsMenuElements = NULL;
 s32 gPostraceTextOffset = 0;
 s32 gPostraceTimestampOffset = 0;
 
-char *gTitleMenuStrings[3] = { 0, 0, 0 };
+char *gTitleMenuStrings[6] = { 0, 0, 0, 0, 0, 0 };
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_LAN) || defined(MDKR_ENABLE_VITA_RELAY))
+static s32 sVitaMultiplayerTitleMenu;
+#if defined(MDKR_ENABLE_VITA_LAN)
+static s32 sVitaLanTitleMenu;
+static s32 sVitaLanHosting;
+static s32 sVitaLanFrontendActive;
+static s32 sVitaLanCharacterAdvanceTimer;
+static s32 sVitaLanUnavailableTimer;
+static s32 sVitaLanResultsControlRequested;
+static s32 sVitaLanTrackMenuLastTrack;
+extern s8 gPostRaceViewPort;
+extern s8 gIsPaused;
+extern s32 gIsInTracksMenu;
+
+void menu_vita_lan_show_failure(const char *message) {
+    platform_vita_message_dialog_queue(message);
+}
+
+void menu_vita_lan_abort_race_presentation(void) {
+    s32 size = fb_size();
+    s32 width = GET_VIDEO_WIDTH(size);
+    s32 height = GET_VIDEO_HEIGHT(size);
+    s32 i;
+
+    racer_sound_stop_all_active();
+    audspat_reset();
+    if (gPostRaceViewPort) {
+        camDisableUserView(0, FALSE);
+        postrace_free();
+        gPostRaceViewPort = FALSE;
+    }
+    bgdraw_set_func(NULL);
+    bgdraw_texture_init(NULL, NULL, 0);
+    disable_new_screen_transitions();
+    disable_cutscene_camera();
+    set_scene_viewport_num(VIEWPORT_LAYOUT_1_PLAYER);
+    cam_set_layout(VIEWPORT_LAYOUT_1_PLAYER);
+    set_active_camera(PLAYER_ONE);
+    for (i = 0; i <= MAXCONTROLLERS; i++) {
+        camDisableUserView(i, TRUE);
+        set_viewport_properties(
+            i, VIEWPORT_AUTO, VIEWPORT_AUTO, VIEWPORT_AUTO, VIEWPORT_AUTO);
+        viewport_menu_set(i, 0, 0, width, height);
+    }
+    copy_viewports_to_stack();
+    viewport_world_regions_reset();
+    for (i = 1; i < DIALOGUEBOXBACKGROUND_COUNT; i++) {
+        dialogue_close(i);
+        dialogue_clear(i);
+    }
+    gIsInTracksMenu = FALSE;
+    gIsPaused = FALSE;
+}
+
+static void menu_vita_lan_return_to_title(const char *message) {
+    char failureMessage[128];
+
+    snprintf(failureMessage, sizeof(failureMessage), "%s",
+             message != NULL ? message : "MULTIPLAYER ERROR");
+    menu_vita_lan_abort_race_presentation();
+    unload_level_menu();
+    mdkr_vita_lan_stop();
+    load_menu_with_level_background(
+        MENU_TITLE, SPECIAL_MAP_ID_NO_LEVEL, 0);
+    menu_vita_lan_show_failure(failureMessage);
+}
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+static s32 sVitaRelayTitleMenu;
+#endif
+
+static void menu_vita_title_set_main_options(void) {
+    gTitleMenuStrings[0] = "SINGLE PLAYER";
+    gTitleMenuStrings[1] = gMenuText[ASSET_MENU_TEXT_OPTIONS];
+    gTitleMenuStrings[2] = "MULTIPLAYER";
+    gTitleMenuStrings[3] = NULL;
+    gTitleMenuStrings[4] = NULL;
+    gTitleMenuStrings[5] = NULL;
+    sVitaMultiplayerTitleMenu = FALSE;
+#if defined(MDKR_ENABLE_VITA_LAN)
+    sVitaLanTitleMenu = FALSE;
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+    sVitaRelayTitleMenu = FALSE;
+#endif
+}
+
+static void menu_vita_title_set_multiplayer_options(void) {
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+    gTitleMenuStrings[0] = mdkr_vita_adhoc_state() == MDKR_VITA_ADHOC_IDLE
+                               ? "AD-HOC"
+                               : (char *)mdkr_vita_adhoc_status();
+#else
+    gTitleMenuStrings[0] = "AD-HOC (UNAVAILABLE)";
+#endif
+#if defined(MDKR_ENABLE_VITA_LAN)
+    gTitleMenuStrings[1] = "LAN";
+#else
+    gTitleMenuStrings[1] = "LAN (UNAVAILABLE)";
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+    gTitleMenuStrings[2] = "ONLINE";
+#else
+    gTitleMenuStrings[2] = "ONLINE (UNAVAILABLE)";
+#endif
+    gTitleMenuStrings[3] = "BACK";
+    gTitleMenuStrings[4] = NULL;
+    gTitleMenuStrings[5] = NULL;
+    sVitaMultiplayerTitleMenu = TRUE;
+#if defined(MDKR_ENABLE_VITA_LAN)
+    sVitaLanTitleMenu = FALSE;
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+    sVitaRelayTitleMenu = FALSE;
+#endif
+}
+#endif
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_ADHOC) || defined(MDKR_ENABLE_VITA_LAN) || \
+     defined(MDKR_ENABLE_VITA_RELAY))
+static s32 vita_title_other_system_dialog_active(void) {
+    s32 active = FALSE;
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+    active |= mdkr_vita_adhoc_state() == MDKR_VITA_ADHOC_CONNECTING;
+#endif
+#if defined(MDKR_ENABLE_VITA_LAN)
+    active |= mdkr_vita_lan_state() == MDKR_VITA_LAN_NAMING;
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+    active |= mdkr_vita_relay_state() == MDKR_VITA_RELAY_NAMING;
+#endif
+    return active;
+}
+
+static s32 vita_title_system_dialog_active(void) {
+    return vita_title_other_system_dialog_active() ||
+           platform_vita_message_dialog_active();
+}
+#endif
 
 // Version text shown on the title screen? See 1:15 in https://www.youtube.com/watch?v=OHSCLcA74ao.
 char gVersionDisplayText[20] = "VERSION XXXXXXXX";
@@ -3445,6 +3603,11 @@ void load_menu_text(s32 language) {
     gContPakNeed2ndAdvStrings[7] = menuText[ASSET_MENU_TEXT_CONTINUE];                  // "CONTINUE"
     gTitleMenuStrings[0] = menuText[ASSET_MENU_TEXT_START];                             // "START"
     gTitleMenuStrings[1] = menuText[ASSET_MENU_TEXT_OPTIONS];                           // "OPTIONS"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    gTitleMenuStrings[0] = "SINGLE PLAYER";
+    gTitleMenuStrings[2] = "MULTIPLAYER";
+    gTitleMenuStrings[3] = NULL;
+#endif
     gGameSelectTextElemsNoAdv2[0].t.asciiText = menuText[ASSET_MENU_TEXT_GAMESELECT];   // "GAME SELECT"
     gGameSelectTextElemsNoAdv2[1].t.asciiText = menuText[ASSET_MENU_TEXT_GAMESELECT];   // "GAME SELECT"
     gGameSelectTextElemsNoAdv2[3].t.asciiText = menuText[ASSET_MENU_TEXT_ADVENTURE];    // "ADVENTURE"
@@ -4718,10 +4881,17 @@ void menu_logos_screen_init(void) {
  * Handler of everything that happens in the space of those 16 seconds.
  */
 s32 menu_logo_screen_loop(s32 updateRate) {
+    s32 controllerIndex;
     s32 opacity;
     s32 yOffset;
     s32 yOffsetShadow;
 
+    for (controllerIndex = 0; controllerIndex < MAXCONTROLLERS; controllerIndex++) {
+        if (input_pressed(controllerIndex) & START_BUTTON) {
+            sBootScreenTimer = 0.0f;
+            break;
+        }
+    }
     if (osTvType == OS_TV_TYPE_PAL) {
         yOffset = 26;
         if (sBootScreenTimer < 2.6f && gMenuDelay == 0) {
@@ -4742,6 +4912,7 @@ s32 menu_logo_screen_loop(s32 updateRate) {
         set_viewport_properties(0, VIEWPORT_AUTO, VIEWPORT_AUTO, VIEWPORT_AUTO, VIEWPORT_AUTO);
         init_title_screen_variables();
         menu_init(MENU_TITLE);
+        return MENU_RESULT_CONTINUE;
     }
     // This uses doubles instead of floats for precision in the counting.
     if (sBootScreenTimer < 8.5) {
@@ -4970,6 +5141,26 @@ void menu_title_screen_init(void) {
 #endif
     gSaveFileIndex = 0;
     gTitleScreenCurrentOption = 0;
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_LAN) || defined(MDKR_ENABLE_VITA_RELAY))
+    sVitaMultiplayerTitleMenu = FALSE;
+#if defined(MDKR_ENABLE_VITA_LAN)
+    sVitaLanTitleMenu = FALSE;
+    sVitaLanHosting = FALSE;
+    sVitaLanFrontendActive = FALSE;
+    sVitaLanCharacterAdvanceTimer = 0;
+    sVitaLanUnavailableTimer = 0;
+    sVitaLanResultsControlRequested = FALSE;
+    sVitaLanTrackMenuLastTrack = -1;
+    mdkr_vita_lan_charselect_close();
+    mdkr_vita_lan_stop();
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+    sVitaRelayTitleMenu = FALSE;
+    mdkr_vita_relay_stop();
+#endif
+    menu_vita_title_set_main_options();
+#endif
     gNumberOfActivePlayers = 4;
     input_assign_players();
     music_play(SEQUENCE_NONE2);
@@ -4980,6 +5171,7 @@ void menu_title_screen_init(void) {
     } else {
         gTitleRevealTimer = 1;
     }
+
     gTitleAudioCounter = 0;
     gMenuStage = TITLESCREEN_START;
     menu_assetgroup_load(sGameTitleTileTextures);
@@ -5036,6 +5228,15 @@ void render_title_screen(UNUSED s32 updateRate, f32 updateRateF) {
         if (!is_controller_missing()) {
             i = 0;
             posY = (osTvType == OS_TV_TYPE_PAL) ? SCREEN_HEIGHT - 22 : SCREEN_HEIGHT - 48;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+            while (gTitleMenuStrings[i] != NULL) {
+                i++;
+            }
+            if (i > 3) {
+                posY -= (i - 3) * 16;
+            }
+            i = 0;
+#endif
             set_text_font(ASSET_FONTS_FUNFONT);
             set_text_background_colour(0, 0, 0, 0);
             while (gTitleMenuStrings[i] != NULL) {
@@ -5070,10 +5271,188 @@ s32 menu_title_screen_loop(s32 updateRate) {
     f32 updateRateF;
     Camera *sp18;
     s8 playerCount;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    s32 vitaCharselectActive = FALSE;
+#endif
 
     sp18 = cam_get_active_camera();
     gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (!vita_title_other_system_dialog_active()) {
+        platform_vita_message_dialog_allow_open();
+    }
+#endif
     menu_input();
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_ADHOC)
+    if (sVitaMultiplayerTitleMenu
+#if defined(MDKR_ENABLE_VITA_LAN)
+        && !sVitaLanTitleMenu
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+        && !sVitaRelayTitleMenu
+#endif
+    ) {
+        mdkr_vita_adhoc_update();
+        if (mdkr_vita_adhoc_state() == MDKR_VITA_ADHOC_IDLE) {
+            gTitleMenuStrings[0] = "AD-HOC";
+        } else {
+            gTitleMenuStrings[0] = (char *)mdkr_vita_adhoc_status();
+        }
+    }
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (sVitaLanTitleMenu) {
+        MdkrMatchLaunchDescriptorV1 raceLaunch;
+        MdkrVitaLanFailure failure;
+        const char *failureMessage;
+        MdkrVitaLanState lanState;
+        unsigned int characterUnlocks;
+        unsigned int roomCount;
+        unsigned int roomIndex;
+#if defined(MDKR_ENABLE_VITA_RELAY)
+        s32 vitaRelayCarrier;
+#endif
+        mdkr_vita_lan_update();
+        if (mdkr_vita_lan_take_failure(&failure, &failureMessage)) {
+            (void)failure;
+            menu_vita_lan_show_failure(failureMessage);
+            mdkr_vita_lan_charselect_close();
+            mdkr_vita_lan_stop();
+            sVitaMultiplayerTitleMenu = FALSE;
+            sVitaLanTitleMenu = FALSE;
+            sVitaLanHosting = FALSE;
+            menu_vita_title_set_main_options();
+            gTitleScreenCurrentOption = 0;
+            return MENU_RESULT_CONTINUE;
+        }
+        if (mdkr_vita_lan_take_race_launch(&raceLaunch)) {
+            mdkr_vita_lan_charselect_close();
+            titlescreen_free();
+            return mdkr_online_prepare_direct_race(&raceLaunch);
+        }
+        lanState = mdkr_vita_lan_state();
+        vitaCharselectActive =
+            lanState == MDKR_VITA_LAN_CHARACTER_SELECT &&
+            mdkr_vita_lan_character_unlocks(&characterUnlocks);
+        sVitaLanHosting = mdkr_vita_lan_is_host();
+#if defined(MDKR_ENABLE_VITA_RELAY)
+        vitaRelayCarrier = mdkr_vita_lan_is_relay();
+#endif
+        if (vitaCharselectActive) {
+            s32 player;
+            titlescreen_free();
+            sVitaLanFrontendActive = TRUE;
+            sVitaLanCharacterAdvanceTimer = 0;
+            gNumberOfActivePlayers = 2;
+            for (player = 0; player < MAXCONTROLLERS; player++) {
+                gActivePlayersArray[player] = player < 2;
+                gPlayersCharacterArray[player] = player < 2 ? 1 : -1;
+            }
+            sp28 = 0;
+            if (characterUnlocks &
+                MDKR_VITA_LAN_UNLOCK_DRUMSTICK) {
+                sp28 = 1;
+            }
+            if (characterUnlocks & MDKR_VITA_LAN_UNLOCK_TT) {
+                sp28 ^= 3;
+            }
+            load_level_for_menu(
+                ASSET_LEVEL_CHARACTERSELECT, -1, sp28);
+            charselect_prev(0, NULL);
+            menu_init(MENU_CHARACTER_SELECT);
+            return MENU_RESULT_CONTINUE;
+        }
+        roomCount = mdkr_vita_lan_room_count();
+        if (vitaCharselectActive) {
+            gTitleMenuStrings[0] = NULL;
+        } else {
+            gTitleMenuStrings[0] = sVitaLanHosting
+                                       ? (char *)mdkr_vita_lan_status()
+                                       : "HOST ROOM";
+        }
+        if (vitaCharselectActive) {
+            gTitleMenuStrings[1] = NULL;
+#if defined(MDKR_ENABLE_VITA_RELAY)
+        } else if (vitaRelayCarrier) {
+            gTitleMenuStrings[0] = (char *)mdkr_vita_lan_status();
+            gTitleMenuStrings[1] = "BACK";
+            gTitleMenuStrings[2] = NULL;
+#endif
+        } else if (sVitaLanHosting) {
+            gTitleMenuStrings[1] = "FIND ROOMS";
+            gTitleMenuStrings[2] = "BACK";
+            gTitleMenuStrings[3] = NULL;
+        } else if (lanState == MDKR_VITA_LAN_JOINING ||
+                   lanState == MDKR_VITA_LAN_CONNECTED ||
+                   lanState == MDKR_VITA_LAN_ERROR) {
+            gTitleMenuStrings[1] = (char *)mdkr_vita_lan_status();
+            gTitleMenuStrings[2] = "BACK";
+            gTitleMenuStrings[3] = NULL;
+        } else {
+            if (roomCount == 0) {
+                gTitleMenuStrings[1] = "SEARCHING...";
+                gTitleMenuStrings[2] = "BACK";
+                gTitleMenuStrings[3] = NULL;
+            } else {
+                for (roomIndex = 0; roomIndex < roomCount; roomIndex++) {
+                    gTitleMenuStrings[roomIndex + 1] =
+                        (char *)mdkr_vita_lan_room_label(roomIndex);
+                }
+                gTitleMenuStrings[roomCount + 1] = "BACK";
+                gTitleMenuStrings[roomCount + 2] = NULL;
+            }
+        }
+    }
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_RELAY)
+    if (sVitaRelayTitleMenu) {
+        MdkrVitaRelayState relayState;
+        unsigned int roomCount;
+        unsigned int roomIndex;
+        mdkr_vita_relay_update();
+        relayState = mdkr_vita_relay_state();
+        roomCount = mdkr_vita_relay_room_count();
+        memset(gTitleMenuStrings, 0, sizeof(gTitleMenuStrings));
+        if (relayState == MDKR_VITA_RELAY_BROWSING ||
+            relayState == MDKR_VITA_RELAY_NAMING) {
+            gTitleMenuStrings[0] = "HOST ROOM";
+            for (roomIndex = 0; roomIndex < roomCount; roomIndex++) {
+                gTitleMenuStrings[roomIndex + 1] =
+                    (char *)mdkr_vita_relay_room_label(roomIndex);
+            }
+            if (roomCount == 0) {
+                gTitleMenuStrings[1] =
+                    (char *)mdkr_vita_relay_status();
+                gTitleMenuStrings[2] = "BACK";
+                if (gTitleScreenCurrentOption > 2) {
+                    gTitleScreenCurrentOption = 2;
+                }
+            } else {
+                gTitleMenuStrings[roomCount + 1] = "BACK";
+                if (gTitleScreenCurrentOption > (s32)roomCount + 1) {
+                    gTitleScreenCurrentOption = (s32)roomCount + 1;
+                }
+            }
+        } else {
+            gTitleMenuStrings[0] = (char *)mdkr_vita_relay_status();
+            gTitleMenuStrings[1] = "BACK";
+            if (gTitleScreenCurrentOption > 1) {
+                gTitleScreenCurrentOption = 1;
+            }
+        }
+#if defined(MDKR_ENABLE_VITA_LAN)
+        if (relayState == MDKR_VITA_RELAY_LOBBY &&
+            mdkr_vita_relay_member_count() == 2u &&
+            mdkr_vita_relay_member_mask() == 0x03u &&
+            mdkr_vita_lan_start_relay() == 0) {
+            sVitaRelayTitleMenu = FALSE;
+            sVitaLanTitleMenu = TRUE;
+            sVitaLanHosting = mdkr_vita_lan_is_host();
+            gTitleScreenCurrentOption = 0;
+        }
+#endif
+    }
+#endif
     if (osTvType == OS_TV_TYPE_PAL) {
         updateRateF = (f32) updateRate / 50.0f;
     } else {
@@ -5169,13 +5548,30 @@ s32 menu_title_screen_loop(s32 updateRate) {
         }
     }
     if (gTitleRevealTimer == 0) {
-        if (gMenuButtons[PLAYER_MENU] & (A_BUTTON | START_BUTTON)) {
+        if ((gMenuButtons[PLAYER_MENU] & (A_BUTTON | START_BUTTON))
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_ADHOC) || defined(MDKR_ENABLE_VITA_LAN) || \
+     defined(MDKR_ENABLE_VITA_RELAY))
+            && !vita_title_system_dialog_active()
+#endif
+        ) {
             gTitleRevealTimer = 1;
         }
-    } else if ((gMenuDelay == 0) && !is_controller_missing()) {
+    } else if ((gMenuDelay == 0) && !is_controller_missing()
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_ADHOC) || defined(MDKR_ENABLE_VITA_LAN) || \
+     defined(MDKR_ENABLE_VITA_RELAY))
+               && !vita_title_system_dialog_active()
+#endif
+    ) {
         s32 temp0 = gTitleScreenCurrentOption;
+        s32 finalOption = 0;
+        while (gTitleMenuStrings[finalOption + 1] != NULL) {
+            finalOption++;
+        }
         // gMenuStickY[PLAYER_MENU] = +1 when going up, and -1 when going down.
-        if (gMenuStickY[PLAYER_MENU] < 0 && gTitleScreenCurrentOption < 1) {
+        if (gMenuStickY[PLAYER_MENU] < 0 &&
+            gTitleScreenCurrentOption < finalOption) {
             gTitleScreenCurrentOption++;
         }
         if (gMenuStickY[PLAYER_MENU] > 0 && gTitleScreenCurrentOption > 0) {
@@ -5189,14 +5585,183 @@ s32 menu_title_screen_loop(s32 updateRate) {
                        (SoundHandle *) (s32 *) (0 * contrIndex)); // TODO: The `* contrIndex` here is a fake match.
 #endif
         }
-        if (gMenuButtons[PLAYER_MENU] & (A_BUTTON | START_BUTTON)) {
+        if (gMenuButtons[PLAYER_MENU] & B_BUTTON) {
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_RELAY)
+            if (sVitaRelayTitleMenu) {
+                mdkr_vita_relay_stop();
+                menu_vita_title_set_multiplayer_options();
+                gTitleScreenCurrentOption = 2;
+                sound_play(SOUND_SELECT2, NULL);
+            } else
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+            if (sVitaLanTitleMenu) {
+                mdkr_vita_lan_charselect_close();
+                mdkr_vita_lan_stop();
+                sVitaLanHosting = FALSE;
+                menu_vita_title_set_multiplayer_options();
+                gTitleScreenCurrentOption = 1;
+                sound_play(SOUND_SELECT2, NULL);
+            } else
+#endif
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_LAN) || defined(MDKR_ENABLE_VITA_RELAY))
+            if (sVitaMultiplayerTitleMenu) {
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+                mdkr_vita_adhoc_stop();
+#endif
+                menu_vita_title_set_main_options();
+                gTitleScreenCurrentOption =
+                    MDKR_VITA_MULTIPLAYER_TITLE_INDEX;
+                sound_play(SOUND_SELECT2, NULL);
+            }
+#else
+            {
+            }
+#endif
+        } else if (gMenuButtons[PLAYER_MENU] & (A_BUTTON | START_BUTTON)) {
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_RELAY)
+            if (sVitaRelayTitleMenu) {
+                MdkrVitaRelayState relayState = mdkr_vita_relay_state();
+                unsigned int roomCount = mdkr_vita_relay_room_count();
+                if (gTitleScreenCurrentOption == finalOption) {
+                    mdkr_vita_relay_stop();
+                    menu_vita_title_set_multiplayer_options();
+                    gTitleScreenCurrentOption = 2;
+                } else if (relayState == MDKR_VITA_RELAY_BROWSING) {
+                    if (gTitleScreenCurrentOption == 0) {
+                        (void)mdkr_vita_relay_start_host();
+                    } else if (gTitleScreenCurrentOption <= (s32)roomCount) {
+                        (void)mdkr_vita_relay_join_room(
+                            (unsigned int)gTitleScreenCurrentOption - 1);
+                    }
+                }
+                sound_play(SOUND_SELECT2, NULL);
+            } else
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+            if (sVitaLanTitleMenu) {
+                if (gTitleScreenCurrentOption == 0) {
+                    if (!sVitaLanHosting) {
+                        if (mdkr_vita_lan_start_host() == 0) {
+                            sVitaLanHosting = TRUE;
+                        }
+                    }
+                } else if (gTitleScreenCurrentOption == finalOption) {
+                    mdkr_vita_lan_charselect_close();
+                    mdkr_vita_lan_stop();
+                    sVitaLanHosting = FALSE;
+                    menu_vita_title_set_multiplayer_options();
+                    gTitleScreenCurrentOption = 1;
+                } else if (sVitaLanHosting) {
+                    if (gTitleScreenCurrentOption == 1) {
+                        (void)mdkr_vita_lan_start_browser();
+                        sVitaLanHosting = FALSE;
+                    }
+                } else if (mdkr_vita_lan_state() ==
+                               MDKR_VITA_LAN_BROWSING &&
+                           gTitleScreenCurrentOption <=
+                               (s32)mdkr_vita_lan_room_count()) {
+                    (void)mdkr_vita_lan_join_room(
+                        (unsigned int)gTitleScreenCurrentOption - 1);
+                } else if (gTitleScreenCurrentOption == 1 &&
+                           (mdkr_vita_lan_state() == MDKR_VITA_LAN_ERROR ||
+                            mdkr_vita_lan_state() == MDKR_VITA_LAN_IDLE)) {
+                        (void)mdkr_vita_lan_start_browser();
+                }
+                sound_play(SOUND_SELECT2, NULL);
+            } else
+#endif
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_LAN) || defined(MDKR_ENABLE_VITA_RELAY))
+            if (sVitaMultiplayerTitleMenu) {
+                if (gTitleScreenCurrentOption == 0) {
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+                    if (mdkr_vita_adhoc_state() ==
+                            MDKR_VITA_ADHOC_SEARCHING ||
+                        mdkr_vita_adhoc_state() ==
+                            MDKR_VITA_ADHOC_CONNECTED) {
+                        mdkr_vita_adhoc_stop();
+                    } else {
+                        (void)mdkr_vita_adhoc_start();
+                    }
+                    sound_play(SOUND_SELECT2, NULL);
+#endif
+                } else if (gTitleScreenCurrentOption == 1) {
+#if defined(MDKR_ENABLE_VITA_LAN)
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+                    mdkr_vita_adhoc_stop();
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+                    mdkr_vita_relay_stop();
+#endif
+                    sVitaLanTitleMenu = TRUE;
+                    sVitaLanHosting = FALSE;
+                    gTitleScreenCurrentOption = 0;
+                    gTitleMenuStrings[0] = "HOST ROOM";
+                    gTitleMenuStrings[1] = "SEARCHING...";
+                    gTitleMenuStrings[2] = "BACK";
+                    gTitleMenuStrings[3] = NULL;
+                    gTitleMenuStrings[4] = NULL;
+                    gTitleMenuStrings[5] = NULL;
+                    (void)mdkr_vita_lan_start_browser();
+                    sound_play(SOUND_SELECT2, NULL);
+#endif
+                } else if (gTitleScreenCurrentOption == 2) {
+#if defined(MDKR_ENABLE_VITA_RELAY)
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+                    mdkr_vita_adhoc_stop();
+#endif
+#if defined(MDKR_ENABLE_VITA_LAN)
+                    mdkr_vita_lan_charselect_close();
+                    mdkr_vita_lan_stop();
+#endif
+                    sVitaRelayTitleMenu = TRUE;
+                    gTitleScreenCurrentOption = 0;
+                    gTitleMenuStrings[0] = "ONLINE: CONNECTING";
+                    gTitleMenuStrings[1] = "BACK";
+                    gTitleMenuStrings[2] = NULL;
+                    gTitleMenuStrings[3] = NULL;
+                    gTitleMenuStrings[4] = NULL;
+                    gTitleMenuStrings[5] = NULL;
+                    (void)mdkr_vita_relay_start_browser();
+#endif
+                    sound_play(SOUND_SELECT2, NULL);
+                } else {
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+                    mdkr_vita_adhoc_stop();
+#endif
+                    menu_vita_title_set_main_options();
+                    gTitleScreenCurrentOption =
+                        MDKR_VITA_MULTIPLAYER_TITLE_INDEX;
+                    sound_play(SOUND_SELECT2, NULL);
+                }
+            } else if (gTitleScreenCurrentOption ==
+                       MDKR_VITA_MULTIPLAYER_TITLE_INDEX) {
+                menu_vita_title_set_multiplayer_options();
+                gTitleScreenCurrentOption = 0;
+                sound_play(SOUND_SELECT2, NULL);
+            } else
+#endif
+            {
             for (contrIndex = 3; contrIndex > 0 && !(gMenuButtons[contrIndex] & (A_BUTTON | START_BUTTON));
                  contrIndex--) {}
             titlescreen_controller_assign(contrIndex);
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_ADHOC)
+            mdkr_vita_adhoc_stop();
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+            mdkr_vita_lan_charselect_close();
+            mdkr_vita_lan_stop();
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_RELAY)
+            mdkr_vita_relay_stop();
+#endif
             gMenuDelay = 1;
             transition_begin(&sMenuTransitionFadeIn);
             enable_new_screen_transitions();
             sound_play(SOUND_SELECT2, NULL);
+            }
         }
     }
     if (gMenuDelay > 30) {
@@ -7806,6 +8371,10 @@ enum {
      */
     VIDEO_OPTION_SHADOWS,
     VIDEO_OPTION_TEXTURE_PACKS,
+    /* Which installed pack HD TEXTURE PACKS uses. Choosing writes the other
+     * packs to Content.PackDisabled, so turning one off never turns the
+     * feature itself off. */
+    VIDEO_OPTION_TEXTURE_PACK_SELECT,
     /* Vita's reliable 60 FPS path is the port's one-field Enhanced cadence.
      * The presentation-only replay path is intentionally not offered here:
      * Vita hardware testing showed held-frame bursts because retained replay
@@ -7825,19 +8394,19 @@ static s32 sAudioPersistencePromptReported;
 static const char *const sVideoOptionLabels[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPERSAMPLING", "ASPECT RATIO", "GAMEPLAY FOV",
     "TEXTURE FILTERING", "REMASTER EFFECTS", "WORLD SHADOWS", "HD TEXTURE PACKS",
-    "FRAME RATE", "RETURN"
+    "TEXTURE PACK", "FRAME RATE", "RETURN"
 };
 
 static const char *const sVideoOptionLabelsDe[VIDEO_OPTION_COUNT] = {
     "DARSTELLUNG", "KANTENGLAETTUNG", "SEITENVERHAELTNIS", "SPIEL-SICHTFELD",
     "TEXTURFILTER", "REMASTER-EFFEKTE", "WELTSCHATTEN", "HD-TEXTURPAKETE",
-    "BILDRATE", "ZURUECK"
+    "TEXTURPAKET", "BILDRATE", "ZURUECK"
 };
 
 static const char *const sVideoOptionLabelsFr[VIDEO_OPTION_COUNT] = {
     "PRESENTATION", "SUPER-ECHANT.", "FORMAT D'IMAGE", "CHAMP DE VISION",
     "FILTRAGE TEXTURES", "EFFETS REMASTER", "OMBRES DU MONDE", "PACKS TEXTURES HD",
-    "FREQUENCE D'IMAGE", "RETOUR"
+    "PACK DE TEXTURES", "FREQUENCE D'IMAGE", "RETOUR"
 };
 
 static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
@@ -7850,6 +8419,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "ART-DIRECTED LIGHTING AND TEXT",
         "SOFT LIGHTENS THEM - OFF RESTORES BLOBS",
         "REQUIRES AN INSTALLED PACK - DEFAULT OFF",
+        "LEFT/RIGHT CHOOSES THE INSTALLED PACK",
         "60 FPS ENHANCED CHANGES GAMEPLAY TIMING",
         "BACK TO OPTIONS"
     },
@@ -7862,6 +8432,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "NEUE BELEUCHTUNG UND SCHRIFT",
         "SANFT MILDERT SIE - AUS BRINGT FLECKEN",
         "BRAUCHT EIN INSTALLIERTES PAKET - STANDARD AUS",
+        "LINKS/RECHTS WAEHLT DAS PAKET",
         "60 FPS ERWEITERT AENDERT DAS SPIELTEMPO",
         "ZURUECK ZU DEN OPTIONEN"
     },
@@ -7874,6 +8445,7 @@ static const char *const sVideoOptionHelp[3][VIDEO_OPTION_COUNT] = {
         "NOUVEL ECLAIRAGE ET NOUVEAU TEXTE",
         "DOUX LES ALLEGE - ARRET REMET LES TACHES",
         "PACK INSTALLE REQUIS - ARRET PAR DEFAUT",
+        "GAUCHE/DROITE CHOISIT LE PACK",
         "60 FPS AMELIORE CHANGE LE RYTHME DU JEU",
         "RETOUR AUX OPTIONS"
     }
@@ -7973,6 +8545,84 @@ static int video_option_cycle_index(int current, int count, int direction) {
     if (current < 0) current = count - 1;
     if (current >= count) current = 0;
     return current;
+}
+
+/* Pack selector state: the single enabled selectable pack, -1 for ALL (more
+ * than one on), or -2 when none is on. */
+static int video_pack_current(int *selectable_count) {
+    int count = platform_content_pack_choice_count();
+    int selectable = 0;
+    int enabled = 0;
+    int last_enabled = -1;
+    int i;
+
+    for (i = 0; i < count; i++) {
+        if (!platform_content_pack_choice_selectable(i)) continue;
+        selectable++;
+        if (platform_content_pack_choice_enabled(i)) {
+            enabled++;
+            last_enabled = i;
+        }
+    }
+    if (selectable_count != NULL) *selectable_count = selectable;
+    if (enabled == 0) return -2;
+    return enabled == 1 ? last_enabled : -1;
+}
+
+static int video_packs_switched_on(void) {
+    const MdkrVideoConfig *config = mdkr_video_config_desired();
+    return config != NULL &&
+           config->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f;
+}
+
+/* Upper-cased for the menu font; a long name keeps its distinguishing tail,
+ * which is where pack versions and variants are usually named. */
+static void video_pack_display_name(const char *name, char *out,
+                                    size_t capacity, size_t max_chars) {
+    size_t length;
+    size_t start = 0;
+    size_t used = 0;
+    size_t i;
+
+    if (out == NULL || capacity == 0) return;
+    out[0] = '\0';
+    if (name == NULL) return;
+    length = strlen(name);
+    if (max_chars + 1 > capacity) max_chars = capacity - 1;
+    if (length > max_chars && max_chars > 2) {
+        out[used++] = '.';
+        out[used++] = '.';
+        start = length - (max_chars - 2);
+    }
+    for (i = start; i < length && used + 1 < capacity; i++) {
+        char c = name[i];
+        if (c >= 'a' && c <= 'z') c = (char)(c - ('a' - 'A'));
+        out[used++] = c;
+    }
+    out[used] = '\0';
+}
+
+static void video_pack_feedback(MdkrVideoRuntimeResult result) {
+    int selectable = 0;
+    int current = video_pack_current(&selectable);
+
+    if (!video_packs_switched_on()) {
+        video_option_copy(sVideoFeedback, sizeof(sVideoFeedback),
+                          video_option_word("TURN ON HD TEXTURE PACKS FIRST",
+                                            "ERST HD-TEXTURPAKETE EINSCHALTEN",
+                                            "ACTIVEZ D'ABORD LES PACKS HD"));
+    } else if (selectable == 0) {
+        video_option_copy(sVideoFeedback, sizeof(sVideoFeedback),
+                          video_option_word("NO PACKS IN THE MODS FOLDER",
+                                            "KEINE PAKETE IM MODS-ORDNER",
+                                            "AUCUN PACK DANS MODS"));
+    } else if (mdkr_video_runtime_result_applied(result) && current >= 0) {
+        video_pack_display_name(platform_content_pack_choice_name(current),
+                                sVideoFeedback, sizeof(sVideoFeedback), 40);
+    } else {
+        return;
+    }
+    sVideoFeedbackTimer = 180;
 }
 
 static void video_option_value(s32 option, char *out, size_t capacity) {
@@ -8079,6 +8729,28 @@ static void video_option_value(s32 option, char *out, size_t capacity) {
                     ? video_option_word("ON", "AN", "OUI")
                     : video_option_word("OFF", "AUS", "NON"));
             break;
+        case VIDEO_OPTION_TEXTURE_PACK_SELECT: {
+            int selectable = 0;
+            int current = video_pack_current(&selectable);
+            if (!video_packs_switched_on()) {
+                video_option_copy(out, capacity,
+                                  video_option_word("OFF", "AUS", "NON"));
+            } else if (selectable == 0) {
+                video_option_copy(out, capacity,
+                                  video_option_word("NONE", "KEINE", "AUCUN"));
+            } else if (current == -1) {
+                video_option_copy(out, capacity,
+                                  video_option_word("ALL", "ALLE", "TOUS"));
+            } else if (current == -2) {
+                video_option_copy(out, capacity,
+                                  video_option_word("NONE", "KEINE", "AUCUN"));
+            } else {
+                video_pack_display_name(
+                    platform_content_pack_choice_name(current), out, capacity,
+                    16);
+            }
+            break;
+        }
         case VIDEO_OPTION_FRAME_RATE:
             video_option_copy(
                 out, capacity,
@@ -8111,6 +8783,13 @@ static int video_option_locked(s32 option) {
         case VIDEO_OPTION_TEXTURE_PACKS:
             return mdkr_video_config_runtime_locked(
                 MDKR_CONTENT_PACKS_ENABLED);
+        case VIDEO_OPTION_TEXTURE_PACK_SELECT: {
+            int selectable = 0;
+            video_pack_current(&selectable);
+            return !video_packs_switched_on() || selectable == 0 ||
+                   mdkr_video_config_runtime_locked(
+                       MDKR_CONTENT_PACK_DISABLED);
+        }
         case VIDEO_OPTION_FRAME_RATE:
             return mdkr_video_config_runtime_locked(
                        MDKR_VIDEO_SIMULATION_CADENCE) ||
@@ -8241,6 +8920,55 @@ static MdkrVideoRuntimeResult video_option_change(s32 option, int direction) {
                 config->values[MDKR_CONTENT_PACKS_ENABLED].number != 0.0f
                     ? "0" : "1");
             break;
+        case VIDEO_OPTION_TEXTURE_PACK_SELECT: {
+            /* Choices: each selectable pack alone, then ALL when there is more
+             * than one. Packs it cannot list (authored off, commas in the name)
+             * stay as their own pack.ini/scan leaves them. */
+            static char list[1024];
+            int choices[65];
+            int choice_count = 0;
+            int selectable = 0;
+            int current = video_pack_current(&selectable);
+            int count = platform_content_pack_choice_count();
+            int chosen;
+            int i;
+            size_t used = 0;
+
+            if (!video_packs_switched_on() || selectable == 0) {
+                result = MDKR_VIDEO_RUNTIME_INVALID;
+                break;
+            }
+            index = -1;
+            for (i = 0; i < count && choice_count < 64; i++) {
+                if (!platform_content_pack_choice_selectable(i)) continue;
+                if (i == current) index = choice_count;
+                choices[choice_count++] = i;
+            }
+            if (choice_count > 1) {
+                if (current == -1) index = choice_count;
+                choices[choice_count++] = -1;
+            }
+            index = video_option_cycle_index(index, choice_count, direction);
+            chosen = choices[index];
+
+            list[0] = '\0';
+            for (i = 0; i < count; i++) {
+                const char *name;
+                size_t length;
+                if (!platform_content_pack_choice_selectable(i)) continue;
+                if (chosen == -1 || i == chosen) continue;
+                name = platform_content_pack_choice_name(i);
+                length = name != NULL ? strlen(name) : 0;
+                if (length == 0 || used + length + 2 > sizeof(list)) continue;
+                if (used > 0) list[used++] = ',';
+                memcpy(list + used, name, length);
+                used += length;
+                list[used] = '\0';
+            }
+            result = mdkr_video_config_runtime_set(MDKR_CONTENT_PACK_DISABLED,
+                                                   list);
+            break;
+        }
         case VIDEO_OPTION_FRAME_RATE: {
             const int enhanced = !strcmp(
                 config->values[MDKR_VIDEO_SIMULATION_CADENCE].text,
@@ -8300,7 +9028,7 @@ static void video_options_render(void) {
               video_options_title(), ALIGN_MIDDLE_CENTER);
 
     set_text_font(ASSET_FONTS_FUNFONT);
-    for (i = 0, y = 48; i < VIDEO_OPTION_COUNT; i++, y += 17) {
+    for (i = 0, y = 48; i < VIDEO_OPTION_COUNT; i++, y += 16) {
         highlight = i == sVideoOptionIndex ? gOptionBlinkTimer * 8 : 0;
         if (highlight > 255) highlight = 511 - highlight;
         if (video_option_locked(i)) {
@@ -8382,6 +9110,9 @@ s32 menu_video_options_loop(s32 updateRate) {
             MdkrVideoRuntimeResult result = video_option_change(
                 sVideoOptionIndex, xAxis < 0 ? -1 : 1);
             video_option_feedback(result);
+            if (sVideoOptionIndex == VIDEO_OPTION_TEXTURE_PACK_SELECT) {
+                video_pack_feedback(result);
+            }
             if (mdkr_video_runtime_result_applied(result)) {
                 sound_play(SOUND_MENU_PICK2, NULL);
             } else {
@@ -12098,6 +12829,13 @@ void menu_character_select_init(void) {
     s32 breakTheLoop;
     s32 i;
     u8 *channelVolumes;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    unsigned int lanLocalSlot;
+    unsigned int lanUnlocks = 0;
+    unsigned char lanCharacters[2];
+    unsigned char lanConfirmed[2];
+    s32 lanSlot;
+#endif
 #ifdef NATIVE_PORT
     CharacterSelectData *baseCharacterSelectData;
     s32 baseCharacterCount;
@@ -12139,6 +12877,37 @@ void menu_character_select_init(void) {
         wizpig_visual_select_end();
         terry_visual_select_end();
     }
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (sVitaLanFrontendActive) {
+        (void)mdkr_vita_lan_character_unlocks(&lanUnlocks);
+        if ((lanUnlocks & (MDKR_VITA_LAN_UNLOCK_DRUMSTICK |
+                           MDKR_VITA_LAN_UNLOCK_TT)) ==
+            (MDKR_VITA_LAN_UNLOCK_DRUMSTICK |
+             MDKR_VITA_LAN_UNLOCK_TT)) {
+            gCurrCharacterSelectData = gCharacterSelectBytesComplete;
+            sCharacterSelectBaseCount =
+                ARRAY_COUNT(gCharacterSelectBytesComplete);
+        } else if (lanUnlocks &
+                   MDKR_VITA_LAN_UNLOCK_DRUMSTICK) {
+            gCurrCharacterSelectData =
+                gCharacterSelectBytesDrumStick;
+            sCharacterSelectBaseCount =
+                ARRAY_COUNT(gCharacterSelectBytesDrumStick);
+        } else if (lanUnlocks & MDKR_VITA_LAN_UNLOCK_TT) {
+            gCurrCharacterSelectData = gCharacterSelectBytesTT;
+            sCharacterSelectBaseCount =
+                ARRAY_COUNT(gCharacterSelectBytesTT);
+        } else {
+            gCurrCharacterSelectData = gCharacterSelectBytesDefault;
+            sCharacterSelectBaseCount =
+                ARRAY_COUNT(gCharacterSelectBytesDefault);
+        }
+        sCharacterSelectCount = sCharacterSelectBaseCount;
+        sTajCharacterSelectIndex = -1;
+        sWizpigCharacterSelectIndex = -1;
+        sTerryCharacterSelectIndex = -1;
+    }
+#endif
     MDKR_TRACE(
         "mod_roster: base=%d count=%d taj=%d wizpig=%d terry=%d taj_enabled=%d wizpig_enabled=%d terry_enabled=%d drumstick=%d tt=%d",
         baseCharacterCount, sCharacterSelectCount,
@@ -12192,6 +12961,32 @@ void menu_character_select_init(void) {
         gCharselectStatus[i] = CHARSELECT_STATUS_UNCONFIRMED;
     }
     gNumberOfReadyPlayers = 0;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (sVitaLanFrontendActive &&
+        mdkr_vita_lan_character_selection(
+            &lanLocalSlot, lanCharacters, lanConfirmed)) {
+        (void)lanLocalSlot;
+        gNumberOfActivePlayers = 2;
+        for (lanSlot = 0; lanSlot < MAXCONTROLLERS; lanSlot++) {
+            gActivePlayersArray[lanSlot] = lanSlot < 2;
+            gPlayersCharacterArray[lanSlot] = lanSlot < 2 ? 0 : -1;
+            if (lanSlot >= 2) {
+                continue;
+            }
+            for (i = 0; i < sCharacterSelectCount; i++) {
+                if (CHARSELECT_DATA(i).voiceID ==
+                    lanCharacters[lanSlot]) {
+                    gPlayersCharacterArray[lanSlot] = i;
+                    break;
+                }
+            }
+            if (lanConfirmed[lanSlot]) {
+                gCharselectStatus[lanSlot] = CHARSELECT_STATUS_READY;
+                gNumberOfReadyPlayers++;
+            }
+        }
+    }
+#endif
     gMenuDelay = 0;
     gOptionBlinkTimer = 0;
     D_800DF484 = 0;
@@ -12361,7 +13156,11 @@ void charselect_render_text(UNUSED s32 updateRate) {
         }
         if (sCustomCharacterRosterOwner >= 0) {
             charselect_custom_draw_panel();
-        } else if (sCustomCharacterRoster.count > 0 &&
+        } else if (
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+                   !sVitaLanFrontendActive &&
+#endif
+                   sCustomCharacterRoster.count > 0 &&
                    gNumberOfReadyPlayers < gNumberOfActivePlayers) {
             s32 player;
             s32 customSeats = 0;
@@ -13026,6 +13825,140 @@ s32 mdkr_workshop_preview_prepare(s32 players, s32 vehicle) {
 }
 #endif
 
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+static s32 vita_lan_character_table_index(unsigned int character) {
+    s32 index;
+    for (index = 0; index < sCharacterSelectCount; index++) {
+        if ((unsigned int)CHARSELECT_DATA(index).voiceID == character) {
+            return index;
+        }
+    }
+    return 0;
+}
+
+static s32 menu_vita_lan_character_select_loop(s32 updateRate) {
+    MdkrVitaLanFailure failure;
+    const char *failureMessage;
+    unsigned int localSlot;
+    unsigned int frontendStage;
+    unsigned int frontendSelection;
+    unsigned char characters[2];
+    unsigned char confirmed[2];
+    CharacterSelectData *characterData;
+    s32 previousIndex;
+    s32 slot;
+
+    mdkr_vita_lan_update();
+    if (mdkr_vita_lan_take_failure(&failure, &failureMessage)) {
+        (void)failure;
+        charselect_free();
+        sVitaLanFrontendActive = FALSE;
+        menu_vita_lan_return_to_title(failureMessage);
+        return MENU_RESULT_CONTINUE;
+    }
+    if (!mdkr_vita_lan_character_selection(
+            &localSlot, characters, confirmed)) {
+        return MENU_RESULT_CONTINUE;
+    }
+
+    for (slot = 0; slot < 2; slot++) {
+        gPlayersCharacterArray[slot] =
+            vita_lan_character_table_index(characters[slot]);
+        gCharselectStatus[slot] = confirmed[slot]
+                                      ? CHARSELECT_STATUS_READY
+                                      : CHARSELECT_STATUS_UNCONFIRMED;
+    }
+    gNumberOfReadyPlayers =
+        (confirmed[0] != 0) + (confirmed[1] != 0);
+
+    if (!confirmed[localSlot]) {
+        previousIndex = gPlayersCharacterArray[localSlot];
+        characterData = &CHARSELECT_DATA(previousIndex);
+        if (gMenuStickY[0] > 0) {
+            charselect_move(localSlot, characterData->upInput,
+                            ARRAY_COUNT(characterData->upInput),
+                            SOUND_MENU_PICK3, SOUND_HORN_DRUMSTICK);
+        } else if (gMenuStickY[0] < 0) {
+            charselect_move(localSlot, characterData->downInput,
+                            ARRAY_COUNT(characterData->downInput),
+                            SOUND_MENU_PICK3, SOUND_HORN_DRUMSTICK);
+        } else if (gMenuStickX[0] < 0) {
+            charselect_move(localSlot, characterData->rightInput,
+                            ARRAY_COUNT(characterData->rightInput),
+                            SOUND_MENU_PICK3, SOUND_HORN_DRUMSTICK);
+        } else if (gMenuStickX[0] > 0) {
+            charselect_move(localSlot, characterData->leftInput,
+                            ARRAY_COUNT(characterData->leftInput),
+                            SOUND_MENU_PICK3, SOUND_HORN_DRUMSTICK);
+        }
+        if (previousIndex != gPlayersCharacterArray[localSlot]) {
+            gMenuCurrentCharacter.channelIndex =
+                charselect_music_channel_for_player(localSlot);
+            gMenuCurrentCharacter.unk2 = 0;
+            gMenuCurrentCharacter.unk1 = 20;
+            (void)mdkr_vita_lan_set_character_selection(
+                CHARSELECT_DATA(
+                    gPlayersCharacterArray[localSlot]).voiceID,
+                FALSE);
+        }
+        if (gMenuButtons[0] & (A_BUTTON | START_BUTTON)) {
+            if (mdkr_vita_lan_set_character_selection(
+                    CHARSELECT_DATA(
+                        gPlayersCharacterArray[localSlot]).voiceID,
+                    TRUE)) {
+                sound_play(SOUND_SELECT2, &gMenuSoundMasks[localSlot]);
+            } else {
+                sound_play(SOUND_HORN_DRUMSTICK, NULL);
+            }
+        }
+    } else if (gMenuButtons[0] & B_BUTTON) {
+        (void)mdkr_vita_lan_set_character_selection(
+            characters[localSlot], FALSE);
+        sound_play(SOUND_MENU_BACK3, &gMenuSoundMasks[localSlot]);
+    }
+
+    if (!mdkr_vita_lan_character_selection(
+            &localSlot, characters, confirmed)) {
+        return MENU_RESULT_CONTINUE;
+    }
+    for (slot = 0; slot < 2; slot++) {
+        gPlayersCharacterArray[slot] =
+            vita_lan_character_table_index(characters[slot]);
+        gCharselectStatus[slot] = confirmed[slot]
+                                      ? CHARSELECT_STATUS_READY
+                                      : CHARSELECT_STATUS_UNCONFIRMED;
+    }
+    gNumberOfReadyPlayers =
+        (confirmed[0] != 0) + (confirmed[1] != 0);
+
+    if (mdkr_vita_lan_is_host() && confirmed[0] && confirmed[1]) {
+        (void)mdkr_vita_lan_set_frontend_state(
+            MDKR_VITA_LAN_FRONTEND_GAME_SELECT, 0);
+    }
+    if (mdkr_vita_lan_frontend_state(
+            &frontendStage, &frontendSelection) &&
+        frontendStage == MDKR_VITA_LAN_FRONTEND_GAME_SELECT) {
+        (void)frontendSelection;
+        sVitaLanCharacterAdvanceTimer += updateRate;
+        if (sVitaLanCharacterAdvanceTimer > 30) {
+            for (slot = 0; slot < 2; slot++) {
+                gCharacterIdSlots[slot] = (s8)characters[slot];
+                mod_racer_set_player_identity(slot, MOD_RACER_RETAIL);
+            }
+            charselect_assign_ai(2);
+            charselect_assign_players(gActivePlayersArray);
+            charselect_free();
+            load_level_for_menu(ASSET_LEVEL_OPTIONSBACKGROUND, -1, 0);
+            menu_init(MENU_GAME_SELECT);
+        }
+    } else {
+        sVitaLanCharacterAdvanceTimer = 0;
+    }
+    gIgnorePlayerInputTime = 0;
+    return MENU_RESULT_CONTINUE;
+}
+#endif
+
 /**
  * Handle the character select menu, letting players pick their character.
  * When finished, this will also assign all the AI racers their character IDs.
@@ -13045,6 +13978,11 @@ s32 menu_character_select_loop(s32 updateRate) {
     charselect_render_text(updateRate);
     charselect_music_channels(updateRate);
     menu_input();
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (sVitaLanFrontendActive) {
+        return menu_vita_lan_character_select_loop(updateRate);
+    }
+#endif
 #ifdef NATIVE_PORT
     customInputMask = charselect_custom_input();
 #endif
@@ -13414,6 +14352,21 @@ void menu_game_select_init(void) {
         gGameSelectElements = gGameSelectTextElemsNoAdv2;
         gMenuStage = 1;
     }
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (sVitaLanFrontendActive) {
+        unsigned int frontendStage;
+        unsigned int frontendSelection;
+        gGameSelectElements = gGameSelectTextElemsNoAdv2;
+        gMenuStage = 1;
+        if (mdkr_vita_lan_frontend_state(
+                &frontendStage, &frontendSelection) &&
+            frontendStage == MDKR_VITA_LAN_FRONTEND_GAME_SELECT) {
+            gMenuCurIndex = frontendSelection > 1u
+                                ? 0
+                                : (s32)frontendSelection;
+        }
+    }
+#endif
 
     for (i = 0; i <= gMenuStage; i++) {
         // Fakematch? What's the (i ^ 0)?
@@ -13461,6 +14414,143 @@ void gameselect_render(UNUSED s32 updateRate) {
     }
 }
 
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+static s32 menu_vita_lan_game_select_loop(s32 updateRate) {
+    MdkrMatchLaunchDescriptorV1 raceLaunch;
+    MdkrVitaLanFailure failure;
+    const char *failureMessage;
+    unsigned int frontendStage;
+    unsigned int frontendSelection;
+    unsigned int localSlot;
+    unsigned char characters[2];
+    unsigned char confirmed[2];
+    s32 playerInputs;
+    s32 playerYDir;
+
+    mdkr_vita_lan_update();
+    if (mdkr_vita_lan_take_failure(&failure, &failureMessage)) {
+        (void)failure;
+        gameselect_free();
+        sVitaLanFrontendActive = FALSE;
+        menu_vita_lan_return_to_title(failureMessage);
+        return MENU_RESULT_CONTINUE;
+    }
+    if (mdkr_vita_lan_take_race_launch(&raceLaunch)) {
+        gameselect_free();
+        sVitaLanFrontendActive = FALSE;
+        return mdkr_online_prepare_direct_race(&raceLaunch);
+    }
+
+    charselect_music_channels(updateRate);
+    gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
+    if (gOpacityDecayTimer) {
+        gOpacityDecayTimer++;
+        if (gOpacityDecayTimer >= 3) {
+            trackmenu_set_records();
+            gOpacityDecayTimer = 0;
+        }
+    }
+    if (gMenuDelay > 0) {
+        gMenuDelay += updateRate;
+    }
+
+    if (mdkr_vita_lan_frontend_state(
+            &frontendStage, &frontendSelection)) {
+        if (frontendStage ==
+            MDKR_VITA_LAN_FRONTEND_CHARACTER_SELECT) {
+            unsigned int unlockMask = 0;
+            s32 sceneId = 0;
+            (void)mdkr_vita_lan_character_unlocks(&unlockMask);
+            if (unlockMask & MDKR_VITA_LAN_UNLOCK_DRUMSTICK) {
+                sceneId = 1;
+            }
+            if (unlockMask & MDKR_VITA_LAN_UNLOCK_TT) {
+                sceneId ^= 3;
+            }
+            gameselect_free();
+            sVitaLanCharacterAdvanceTimer = 0;
+            load_level_for_menu(
+                ASSET_LEVEL_CHARACTERSELECT, -1, sceneId);
+            charselect_prev(0, NULL);
+            menu_init(MENU_CHARACTER_SELECT);
+            return MENU_RESULT_CONTINUE;
+        }
+        if (frontendStage ==
+            MDKR_VITA_LAN_FRONTEND_TRACK_SELECT) {
+            gameselect_free();
+            music_change_on();
+            load_level_for_menu(
+                SPECIAL_MAP_ID_NO_LEVEL, -1, 0);
+            menu_init(MENU_TRACK_SELECT);
+            return MENU_RESULT_CONTINUE;
+        }
+        gMenuCurIndex = frontendSelection > 1u
+                            ? 0
+                            : (s32)frontendSelection;
+    }
+
+    gameselect_render(updateRate);
+    if (gMenuCurIndex == 0) {
+        set_text_font(ASSET_FONTS_FUNFONT);
+        set_text_background_colour(0, 0, 0, 160);
+        set_text_colour(255, 160, 96, 0, 255);
+        draw_text(&sMenuCurrDisplayList, POS_CENTRED, 210,
+                  "ADVENTURE UNAVAILABLE IN LAN",
+                  ALIGN_MIDDLE_CENTER);
+    }
+
+    if (sVitaLanUnavailableTimer > 0) {
+        sVitaLanUnavailableTimer -= updateRate;
+        if (sVitaLanUnavailableTimer < 0) {
+            sVitaLanUnavailableTimer = 0;
+        }
+    }
+    if (!mdkr_vita_lan_is_host() || gMenuDelay != 0 ||
+        mdkr_vita_lan_state() != MDKR_VITA_LAN_CHARACTER_SELECT) {
+        gIgnorePlayerInputTime = 0;
+        return MENU_RESULT_CONTINUE;
+    }
+
+    playerInputs = input_pressed(PLAYER_ONE);
+    playerYDir = gControllersYAxisDirection[0];
+    if (playerInputs & (A_BUTTON | START_BUTTON)) {
+        if (gMenuCurIndex == 0) {
+            sVitaLanUnavailableTimer = 60;
+            sound_play(SOUND_HORN_DRUMSTICK, NULL);
+        } else if (mdkr_vita_lan_set_frontend_state(
+                       MDKR_VITA_LAN_FRONTEND_TRACK_SELECT, 0)) {
+            sound_play(SOUND_SELECT2, NULL);
+        } else {
+            sound_play(SOUND_HORN_DRUMSTICK, NULL);
+        }
+    } else if (playerInputs & B_BUTTON) {
+        if (mdkr_vita_lan_character_selection(
+                &localSlot, characters, confirmed)) {
+            (void)confirmed;
+            (void)mdkr_vita_lan_set_character_selection(
+                characters[localSlot], FALSE);
+        }
+        (void)mdkr_vita_lan_set_frontend_state(
+            MDKR_VITA_LAN_FRONTEND_CHARACTER_SELECT, 0);
+        sound_play(SOUND_MENU_BACK3, NULL);
+    } else if (playerYDir < 0 && gMenuCurIndex < 1) {
+        gMenuCurIndex++;
+        (void)mdkr_vita_lan_set_frontend_state(
+            MDKR_VITA_LAN_FRONTEND_GAME_SELECT,
+            (unsigned int)gMenuCurIndex);
+        sound_play(SOUND_MENU_PICK2, NULL);
+    } else if (playerYDir > 0 && gMenuCurIndex > 0) {
+        gMenuCurIndex--;
+        (void)mdkr_vita_lan_set_frontend_state(
+            MDKR_VITA_LAN_FRONTEND_GAME_SELECT,
+            (unsigned int)gMenuCurIndex);
+        sound_play(SOUND_MENU_PICK2, NULL);
+    }
+    gIgnorePlayerInputTime = 0;
+    return MENU_RESULT_CONTINUE;
+}
+#endif
+
 /**
  * Make sure the correct music channels are active in accordance to the selected player,
  * then render the available game modes.
@@ -13470,6 +14560,11 @@ s32 menu_game_select_loop(s32 updateRate) {
     s32 playerYDir;
     s32 charSelectScene;
 
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (sVitaLanFrontendActive) {
+        return menu_vita_lan_game_select_loop(updateRate);
+    }
+#endif
     charselect_music_channels(updateRate);
 
     gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
@@ -14403,6 +15498,12 @@ void menu_track_select_init(void) {
     Settings *settings;
     s8 *trackIds;
 
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        set_scene_viewport_num(VIEWPORT_LAYOUT_1_PLAYER);
+        set_active_camera(PLAYER_ONE);
+    }
+#endif
 #if REGION != REGION_JP
     load_font(ASSET_FONTS_BIGFONT);
 #endif
@@ -14536,6 +15637,42 @@ void menu_track_select_init(void) {
         }
 #undef getTrackId
     }
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (sVitaLanFrontendActive ||
+        mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        unsigned int frontendStage;
+        unsigned int frontendSelection;
+        for (i = 0; i < 5; i++) {
+            for (j = 0; j < 6; j++) {
+                gTrackSelectIDs[i][j] =
+                    j < 4 ? trackIds[(i * 6) + j] : -1;
+            }
+        }
+        gFFLUnlocked = 1;
+        if (sVitaLanFrontendActive &&
+            mdkr_vita_lan_frontend_state(
+                &frontendStage, &frontendSelection) &&
+            frontendStage == MDKR_VITA_LAN_FRONTEND_TRACK_SELECT &&
+            frontendSelection < 30u) {
+            gTrackSelectCursorX = (s32)(frontendSelection % 6u);
+            gTrackSelectCursorY = (s32)(frontendSelection / 6u);
+            gTrackSelectX =
+                (f32)gTrackSelectCursorX * 320.0f;
+            gTrackSelectY =
+                (f32)gTrackSelectCursorY *
+                (f32)-gTrackSelectViewportY;
+        }
+        if (gTrackSelectCursorX >= 4 ||
+            gTrackSelectIDs[gTrackSelectCursorY]
+                           [gTrackSelectCursorX] == -1) {
+            gTrackSelectCursorX = 0;
+            gTrackSelectCursorY = 0;
+            gTrackSelectX = 0.0f;
+            gTrackSelectY = 0.0f;
+        }
+        sVitaLanTrackMenuLastTrack = -1;
+    }
+#endif
 
     gTrackIdForPreview = gTrackSelectIDs[gTrackSelectCursorY][gTrackSelectCursorX];
     gTrackSelectRow = gTrackSelectCursorY + 1;
@@ -14637,9 +15774,23 @@ void trackmenu_assets(s32 type) {
  * Show the track selection menu, or the course and vehicle selection menu,
  * or the course info, depending on what should be visible.
  */
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+static void menu_vita_lan_release_track_viewport(void) {
+    bgdraw_set_func(NULL);
+    gIsInTracksMenu = FALSE;
+    disable_new_screen_transitions();
+    viewport_menu_set(
+        0, 0, 0, gTrackSelectViewPortX, gTrackSelectViewportY);
+    copy_viewports_to_stack();
+}
+#endif
+
 s32 menu_track_select_loop(s32 updateRate) {
     s32 cutsceneId;
     Settings *settings;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    s32 vitaLanTrackMenu;
+#endif
 
     settings = get_settings();
     gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
@@ -14651,6 +15802,160 @@ s32 menu_track_select_loop(s32 updateRate) {
         }
     }
     menu_input();
+
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    vitaLanTrackMenu =
+        sVitaLanFrontendActive ||
+        mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING;
+    if (vitaLanTrackMenu) {
+        MdkrMatchLaunchDescriptorV1 raceLaunch;
+        MdkrVitaLanControl control;
+        MdkrVitaLanFailure failure;
+        const char *failureMessage;
+        unsigned int remoteTrack;
+        unsigned int trackId;
+        unsigned int vehicleMask;
+        unsigned int matchEpoch;
+        unsigned int frontendStage;
+        unsigned int frontendSelection;
+        s32 row;
+        s32 column;
+
+        mdkr_vita_lan_update();
+        if (mdkr_vita_lan_take_failure(&failure, &failureMessage)) {
+            (void)failure;
+            menu_vita_lan_release_track_viewport();
+            menu_track_select_unload();
+            menu_vita_lan_return_to_title(failureMessage);
+            return MENU_RESULT_CONTINUE;
+        }
+        if (sVitaLanFrontendActive &&
+            mdkr_vita_lan_take_race_launch(&raceLaunch)) {
+            menu_vita_lan_release_track_viewport();
+            menu_track_select_unload();
+            sVitaLanFrontendActive = FALSE;
+            return mdkr_online_prepare_direct_race(&raceLaunch);
+        }
+        if (!sVitaLanFrontendActive &&
+            mdkr_vita_lan_take_control(
+                &control, &trackId, &vehicleMask, &matchEpoch)) {
+            menu_vita_lan_release_track_viewport();
+            menu_track_select_unload();
+            if (control == MDKR_VITA_LAN_CONTROL_QUIT) {
+                menu_vita_lan_return_to_title("MULTIPLAYER ENDED");
+                return MENU_RESULT_CONTINUE;
+            }
+            if (!mdkr_vita_lan_restart_race(
+                    trackId, vehicleMask, matchEpoch, &raceLaunch)) {
+                menu_vita_lan_return_to_title(
+                    "MULTIPLAYER START FAILED");
+                return MENU_RESULT_CONTINUE;
+            }
+            return mdkr_online_prepare_direct_race(&raceLaunch);
+        }
+
+        if (sVitaLanFrontendActive &&
+            mdkr_vita_lan_frontend_state(
+                &frontendStage, &frontendSelection)) {
+            if (frontendStage ==
+                MDKR_VITA_LAN_FRONTEND_GAME_SELECT) {
+                menu_vita_lan_release_track_viewport();
+                menu_track_select_unload();
+                load_level_for_menu(
+                    ASSET_LEVEL_OPTIONSBACKGROUND, -1, 0);
+                menu_init(MENU_GAME_SELECT);
+                return MENU_RESULT_CONTINUE;
+            }
+            if (frontendStage ==
+                    MDKR_VITA_LAN_FRONTEND_TRACK_SELECT &&
+                frontendSelection < 30u) {
+                row = (s32)(frontendSelection / 6u);
+                column = (s32)(frontendSelection % 6u);
+                if (column < 4 &&
+                    gTrackSelectIDs[row][column] != -1) {
+                    gTrackSelectCursorX = column;
+                    gTrackSelectCursorY = row;
+                    gTrackSelectTargetX =
+                        (f32)column * 320.0f;
+                    gTrackSelectTargetY =
+                        (f32)row *
+                        (f32)-gTrackSelectViewportY;
+                    gTrackIdForPreview =
+                        gTrackSelectIDs[row][column];
+                }
+            }
+        }
+
+        if (mdkr_vita_lan_is_host()) {
+            gMenuButtons[PLAYER_MENU] = gMenuButtons[0];
+            gMenuStickX[PLAYER_MENU] = gMenuStickX[0];
+            gMenuStickY[PLAYER_MENU] = gMenuStickY[0];
+            if (gTrackmenuType == TRACKMENU_TYPE_RESET_CURSOR &&
+                gMenuDelay == 0 &&
+                (gMenuButtons[PLAYER_MENU] &
+                 (A_BUTTON | START_BUTTON)) &&
+                gTrackIdForPreview >= 0 && bgload_active() == FALSE) {
+                vehicleMask =
+                    (unsigned int)leveltable_vehicle_usable(
+                        gTrackIdForPreview) &
+                    0x07u;
+                if (gTrackIdForPreview == 15) {
+                    vehicleMask &= ~(1u << VEHICLE_HOVERCRAFT);
+                } else if (gTrackIdForPreview == 28) {
+                    vehicleMask &= ~(1u << VEHICLE_PLANE);
+                }
+                if ((sVitaLanFrontendActive &&
+                     mdkr_vita_lan_start_selected_race(
+                         (unsigned int)gTrackIdForPreview,
+                         vehicleMask)) ||
+                    (!sVitaLanFrontendActive &&
+                     mdkr_vita_lan_request_control(
+                         MDKR_VITA_LAN_CONTROL_SELECT_TRACK,
+                         (unsigned int)gTrackIdForPreview,
+                         vehicleMask))) {
+                    sound_play(SOUND_SELECT2, NULL);
+                }
+                gMenuButtons[PLAYER_MENU] &=
+                    ~(A_BUTTON | START_BUTTON);
+            }
+            if (gMenuButtons[PLAYER_MENU] & B_BUTTON) {
+                gMenuButtons[PLAYER_MENU] &= ~B_BUTTON;
+                if (sVitaLanFrontendActive) {
+                    (void)mdkr_vita_lan_set_frontend_state(
+                        MDKR_VITA_LAN_FRONTEND_GAME_SELECT, 1);
+                    sound_play(SOUND_MENU_BACK3, NULL);
+                } else {
+                    sound_play(SOUND_HORN_DRUMSTICK, NULL);
+                }
+            }
+        } else {
+            for (row = 0; row <= PLAYER_MENU; row++) {
+                gMenuButtons[row] = 0;
+                gMenuStickX[row] = 0;
+                gMenuStickY[row] = 0;
+            }
+            if (!sVitaLanFrontendActive &&
+                mdkr_vita_lan_track_picker(&remoteTrack)) {
+                for (row = 0; row < 5; row++) {
+                    for (column = 0; column < 4; column++) {
+                        if (gTrackSelectIDs[row][column] ==
+                            (s32)remoteTrack) {
+                            gTrackSelectCursorX = column;
+                            gTrackSelectCursorY = row;
+                            gTrackSelectTargetX =
+                                (f32)column * 320.0f;
+                            gTrackSelectTargetY =
+                                (f32)row *
+                                (f32)-gTrackSelectViewportY;
+                            gTrackIdForPreview =
+                                (s32)remoteTrack;
+                        }
+                    }
+                }
+            }
+        }
+    }
+#endif
 
 #ifdef NATIVE_PORT
     /* The course browser presents the live view through a wooden aperture.
@@ -14678,6 +15983,24 @@ s32 menu_track_select_loop(s32 updateRate) {
             func_80092188(updateRate);
             break;
     }
+
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (vitaLanTrackMenu && mdkr_vita_lan_is_host() &&
+        gTrackmenuType == TRACKMENU_TYPE_RESET_CURSOR &&
+        gTrackIdForPreview >= 0 &&
+        sVitaLanTrackMenuLastTrack != gTrackIdForPreview) {
+        sVitaLanTrackMenuLastTrack = gTrackIdForPreview;
+        if (sVitaLanFrontendActive) {
+            (void)mdkr_vita_lan_set_frontend_state(
+                MDKR_VITA_LAN_FRONTEND_TRACK_SELECT,
+                (unsigned int)(gTrackSelectCursorY * 6 +
+                               gTrackSelectCursorX));
+        } else {
+            mdkr_vita_lan_set_track_picker(
+                TRUE, (unsigned int)gTrackIdForPreview);
+        }
+    }
+#endif
 
     if (sMenuMusicVolume < 0) {
         music_volume_set(0);
@@ -16416,8 +17739,18 @@ void menu_pause_init(void) {
     s32 raceType;
     s32 i;
     Settings *settings;
+#ifdef NATIVE_PORT
+    Object **racerObjects;
+    s32 racerCount;
+#endif
 
     rumble_init(FALSE);
+#ifdef NATIVE_PORT
+    racerObjects = get_racer_objects(&racerCount);
+    for (i = 0; racerObjects != NULL && i < racerCount; i++) {
+        racer_sound_stop_active(racerObjects[i]);
+    }
+#endif
     settings = get_settings();
     gLastPlayerWhoPaused = -1;
 
@@ -16860,7 +18193,6 @@ static s8 sOnlinePostraceEndRequested;
 /* the postrace-viewport latch (defined in thread3_main.c, no header) --
  * the resident post-race fork clears it before handing control to the session so
  * the next resident race does not re-enter menu_postrace with a stale TRUE. */
-extern s8 gPostRaceViewPort;
 #endif
 
 /**
@@ -16872,6 +18204,9 @@ void postrace_start(s32 finishState, s32 worldID) {
     s16 *var_v1;
     LevelHeader *header;
 
+#ifdef NATIVE_PORT
+    mdkr_rollback_game_runtime_level_end();
+#endif
     rumble_init(FALSE);
 #ifdef NATIVE_PORT
     viewport_world_region_set(0, VIEWPORT_WORLD_REGION_PRESENTATION);
@@ -16884,7 +18219,11 @@ void postrace_start(s32 finishState, s32 worldID) {
 #endif
     header = level_header();
     gPostraceFinishState = finishState;
-    if (is_in_two_player_adventure()) {
+    if (is_in_two_player_adventure()
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+        || mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING
+#endif
+    ) {
         set_scene_viewport_num(VIEWPORT_LAYOUT_1_PLAYER);
     }
     gPostRace1Player = FALSE;
@@ -17623,6 +18962,18 @@ s32 menu_postrace(Gfx **dList, Mtx **matrices, Vertex **vertices, s32 updateRate
             }
             break;
         case POSTRACE_STAGE_FADE_OUT:
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+            if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+                /* The finish barrier enters postrace on the same confirmed
+                 * tick, but rollback input ownership ends in postrace_start().
+                 * Do not let endpoint-local A/START timing split the peers
+                 * before the host-authoritative results menu takes over. */
+                music_fade(-128);
+                transition_begin(&sMenuTransitionFadeIn);
+                gMenuStage = POSTRACE_STAGE_END;
+                break;
+            }
+#endif
 #if MDKR_ENABLE_ONLINE_BETA
             /* Online post-race exit (hostile-review CRITICAL C3). The stock
              * multiplayer post-race parks here on LOCAL input: A/START arms
@@ -17832,6 +19183,9 @@ void menu_results_init(void) {
     gMenuOption = 0;
     gIgnorePlayerInputTime = 1;
     gMenuSubOption = 0;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    sVitaLanResultsControlRequested = FALSE;
+#endif
     menu_assetgroup_load(gRaceResultsObjectIndices);
     menu_imagegroup_load(gRaceResultsImageIndices);
     menu_racer_portraits();
@@ -18049,6 +19403,60 @@ s32 menu_results_loop(s32 updateRate) {
     playPickSound = FALSE;
     gOptionBlinkTimer = (gOptionBlinkTimer + updateRate) & 0x3F;
     menu_input();
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        MdkrMatchLaunchDescriptorV1 raceLaunch;
+        MdkrVitaLanControl control;
+        MdkrVitaLanFailure failure;
+        const char *failureMessage;
+        unsigned int trackId;
+        unsigned int vehicleMask;
+        unsigned int matchEpoch;
+
+        mdkr_vita_lan_update();
+        if (mdkr_vita_lan_take_failure(&failure, &failureMessage)) {
+            (void)failure;
+            results_free();
+            menu_vita_lan_return_to_title(failureMessage);
+            return MENU_RESULT_CONTINUE;
+        }
+        if (mdkr_vita_lan_take_control(
+                &control, &trackId, &vehicleMask, &matchEpoch)) {
+            results_free();
+            dialogue_close(7);
+            dialogue_clear(7);
+            if (control == MDKR_VITA_LAN_CONTROL_QUIT) {
+                menu_vita_lan_return_to_title("MULTIPLAYER ENDED");
+                return MENU_RESULT_CONTINUE;
+            }
+            if (!mdkr_vita_lan_restart_race(
+                    trackId, vehicleMask, matchEpoch, &raceLaunch)) {
+                menu_vita_lan_return_to_title(
+                    "MULTIPLAYER START FAILED");
+                return MENU_RESULT_CONTINUE;
+            }
+            return mdkr_online_prepare_direct_race(&raceLaunch);
+        }
+        if (!mdkr_vita_lan_is_host()) {
+            if (mdkr_vita_lan_track_picker(&trackId)) {
+                results_free();
+                dialogue_close(7);
+                dialogue_clear(7);
+                load_level_for_menu(
+                    SPECIAL_MAP_ID_NO_LEVEL, -1, 0);
+                menu_init(MENU_TRACK_SELECT);
+                return MENU_RESULT_CONTINUE;
+            }
+            gMenuButtons[PLAYER_MENU] = 0;
+            gMenuStickX[PLAYER_MENU] = 0;
+            gMenuStickY[PLAYER_MENU] = 0;
+        } else {
+            gMenuButtons[PLAYER_MENU] = gMenuButtons[0];
+            gMenuStickX[PLAYER_MENU] = gMenuStickX[0];
+            gMenuStickY[PLAYER_MENU] = gMenuStickY[0];
+        }
+    }
+#endif
     if (gMenuStage <= RESULTS_SCORE) {
         gOpacityDecayTimer += updateRate;
         if (gOpacityDecayTimer >= 60) {
@@ -18131,6 +19539,33 @@ s32 menu_results_loop(s32 updateRate) {
     } else {
         gMenuDelay += updateRate;
         if (gMenuDelay > 30) {
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+            if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+                if (gResultOptionText[gMenuOption] ==
+                    gMenuText[ASSET_MENU_TEXT_SELECTTRACK]) {
+                    results_free();
+                    dialogue_close(7);
+                    dialogue_clear(7);
+                    mdkr_vita_lan_set_track_picker(TRUE, 0);
+                    load_level_for_menu(
+                        SPECIAL_MAP_ID_NO_LEVEL, -1, 0);
+                    menu_init(MENU_TRACK_SELECT);
+                    return MENU_RESULT_CONTINUE;
+                }
+                if (!sVitaLanResultsControlRequested) {
+                    MdkrVitaLanControl control =
+                        gResultOptionText[gMenuOption] ==
+                                gMenuText[ASSET_MENU_TEXT_TRYAGAIN]
+                            ? MDKR_VITA_LAN_CONTROL_RESTART
+                            : MDKR_VITA_LAN_CONTROL_QUIT;
+                    if (mdkr_vita_lan_request_control(
+                            control, 0, 0)) {
+                        sVitaLanResultsControlRequested = TRUE;
+                    }
+                }
+                return MENU_RESULT_CONTINUE;
+            }
+#endif
             results_free();
             dialogue_close(7);
             dialogue_clear(7);
@@ -20555,7 +21990,8 @@ s32 is_in_tracks_mode(void) {
     return gIsInTracksMode;
 }
 
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
 /**
  * Online direct-boot: set the menu-owned globals that the front-end's
  * tracks-mode versus route (Character Select -> Track Select -> GO) would leave

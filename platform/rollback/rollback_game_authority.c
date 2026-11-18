@@ -26,6 +26,7 @@ extern s32 gCurrentRNGSeed;
 extern s32 gPrevRNGSeed;
 extern s32 gObjectCount;
 extern s32 gObjectListStart;
+extern s16 gFirstActiveObjectId;
 extern s32 gParticleCount;
 extern s32 gCollisionObjectCount;
 extern s32 gFreeListCount;
@@ -65,6 +66,7 @@ extern s32 D_801234F8;
 extern s32 D_801234FC;
 extern s8 gLevelSettings[16];
 extern s32 gRaceStartTimer;
+extern f32 D_8011D544;
 extern Camera gCameras[8];
 extern s32 gTTCamPlayerID;
 extern s32 gTTCamID;
@@ -161,6 +163,7 @@ enum MdkrGameAuthorityTag {
     TAG_SCENE_LOAD_MODE,
     TAG_LEVEL_SETTINGS,
     TAG_RACE_START_TIMER,
+    TAG_RACER_START_SETTLE_TIMER,
     TAG_CAMERAS,
     TAG_TT_CAMERA_PLAYER,
     TAG_TT_CAMERA_ID,
@@ -188,6 +191,9 @@ enum MdkrGameAuthorityTag {
                                 MDKR_AUDIO_SPATIAL_ROLLBACK_STATE_SPAN_COUNT,
     TAG_INPUT_STATE_BASE = TAG_TRANSITION_STATE_BASE +
                            MDKR_TRANSITION_ROLLBACK_STATE_SPAN_COUNT,
+    /* Appended after the input span so existing tag values do not shift. */
+    TAG_OBJECT_FIRST_ACTIVE = TAG_INPUT_STATE_BASE +
+                              MDKR_INPUT_ROLLBACK_STATE_SPAN_COUNT,
 };
 
 #define TAG_ALLOC_OBJECT_AUX_BASE UINT32_C(0x4F410000)
@@ -350,6 +356,7 @@ static void rebuild_presentation_after_restore(void *context) {
         }
     }
 #endif
+    audspat_rollback_reconcile_handles();
     camera_obstruction_runtime_reset();
 }
 
@@ -492,6 +499,11 @@ bool mdkr_rollback_game_authority_register(
         !ADD_SCALAR(ranges, &count, gPrevRNGSeed, TAG_RNG_PREVIOUS) ||
         !ADD_SCALAR(ranges, &count, gObjectCount, TAG_OBJECT_COUNT) ||
         !ADD_SCALAR(ranges, &count, gObjectListStart, TAG_OBJECT_LIST_START) ||
+        /* Cached partition boundary that obj_sort_tick sorts from. Spawns do not
+         * reset it and the free path lowers it, so it cannot be recomputed after
+         * a restore; a stale value reorders gObjPtrList (update/collision/sound
+         * order) and the resimulation diverges from the peer timeline. */
+        !ADD_SCALAR(ranges, &count, gFirstActiveObjectId, TAG_OBJECT_FIRST_ACTIVE) ||
         !ADD_SCALAR(ranges, &count, gParticleCount, TAG_PARTICLE_COUNT) ||
         !ADD_SCALAR(ranges, &count, gCollisionObjectCount, TAG_COLLISION_COUNT) ||
         !ADD_SCALAR(ranges, &count, gFreeListCount, TAG_FREE_LIST_COUNT) ||
@@ -531,6 +543,8 @@ bool mdkr_rollback_game_authority_register(
         !ADD_SCALAR(ranges, &count, D_801234FC, TAG_SCENE_LOAD_MODE) ||
         !ADD_SCALAR(ranges, &count, gLevelSettings, TAG_LEVEL_SETTINGS) ||
         !ADD_SCALAR(ranges, &count, gRaceStartTimer, TAG_RACE_START_TIMER) ||
+        !ADD_SCALAR(
+            ranges, &count, D_8011D544, TAG_RACER_START_SETTLE_TIMER) ||
         !ADD_SCALAR(ranges, &count, gCameras, TAG_CAMERAS) ||
         !ADD_SCALAR(ranges, &count, gTTCamPlayerID, TAG_TT_CAMERA_PLAYER) ||
         !ADD_SCALAR(ranges, &count, gTTCamID, TAG_TT_CAMERA_ID) ||

@@ -1530,6 +1530,10 @@ typedef struct Object_Racer {
     /* 0x218 */ SoundHandle weaponSoundMask;
     /* 0x21C */ SoundHandle unk21C;
     /* 0x220 */ SoundHandle unk220;
+#ifdef NATIVE_PORT
+    /* Reserved for native save/snapshot layout compatibility. */
+    struct AudioPoint *networkSlideSound;
+#endif
 } Object_Racer;
 
 typedef struct Object_Door {

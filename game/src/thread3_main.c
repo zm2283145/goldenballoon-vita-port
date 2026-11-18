@@ -4,6 +4,7 @@
 #include "asset_loading.h"
 #include "audio.h"
 #include "audio_spatial.h"
+#include "audio_vehicle.h"
 #include "audiomgr.h"
 #include "audiosfx.h"
 #include "borders.h"
@@ -72,9 +73,11 @@
  * below. Dependency-free header; the TU (party_link.c) is beta-only, so the OFF
  * build never sees this include and thread3_main.o stays byte-identical. */
 #include "net/party_link.h"
-/* NON-BLOCKING online race pause: the deterministic retail-pause suppression
- * (mode_game) + the per-frame local overlay (main_game_loop). Beta-only TU
- * (game/src/online/, CMake-gated); the OFF build never sees this include. */
+#endif
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
+/* NON-BLOCKING multiplayer race pause: deterministic retail-pause suppression
+ * plus a presentation-only local overlay. */
 #include "online/online_race_pause.h"
 #endif
 #include "platform_os.h"
@@ -85,12 +88,20 @@
 #include "fast3d/gfx_pc_dkr.h"
 #include "gpu_diagnostics.h"
 #include "present_sched.h"
+#if defined(__vita__)
+#include "audi_port_dkr.h"
+#endif
 #include "gameplay_event_trace.h"
 #include "presentation_snapshot.h"
 #include "rollback/rollback_game_runtime.h"
+#include "mod_texture_preload.h"
 #include "taj_mod.h"
 #include "vita_trophy.h"
 #include "vita_profiler.h"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+#include "vita_lan.h"
+#include "online/online_race_boot.h"
+#endif
 #ifndef MDKR_ADVENTURE_PARTY_OMIT
 /* AP-10 shared pause + controller-disconnect authority. Behind
  * NATIVE_PORT && !OMIT with an immediate stock else at every call, so OMIT /
@@ -146,6 +157,11 @@ s32 gNumHudVertsPerPlayer[MAXCONTROLLERS] = { 300, 600, 850, 900 };
 s32 gNumHudMatPerPlayer[MAXCONTROLLERS] = { 300, 400, 550, 600 };
 s32 gNumHudTrisPerPlayer[MAXCONTROLLERS] = { 20, 30, 40, 50 };
 s8 gDrawFrameTimer = 0;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+static unsigned int sVitaLanCadenceFields;
+static unsigned int sVitaLanCadenceLogCount;
+static s32 sVitaLanSamePassGfxActive;
+#endif
 FadeTransition D_800DD3F4 = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_OUT, FADE_COLOR_BLACK, 20, 0);
 UNUSED FadeTransition D_800DD3FC = FADE_TRANSITION(FADE_FULLSCREEN, FADE_FLAG_NONE, FADE_COLOR_WHITE, 20, FADE_STAY);
 s32 sLogicUpdateRate = LOGIC_5FPS;
@@ -1751,6 +1767,11 @@ void thread3_main(UNUSED void *unused) {
     gDmemInvalid = FALSE;
     gDrawFrameTimer = 0;
     sLogicUpdateRate = LOGIC_5FPS;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    sVitaLanCadenceFields = 0u;
+    sVitaLanCadenceLogCount = 0u;
+    sVitaLanSamePassGfxActive = FALSE;
+#endif
     bzero(gLevelSettings, sizeof(gLevelSettings));
     gSPTaskNum = 0;
     gGameMode = 0;
@@ -1956,6 +1977,12 @@ void main_game_loop(void) {
     s32 framebufferSize;
     s32 tempLogicUpdateRate, tempLogicUpdateRateMax;
     s32 logicUpdateRate = sLogicUpdateRate;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    s32 vitaLanSimulationStalled = FALSE;
+    s32 vitaLanGfxTaskSubmitted = FALSE;
+    s32 vitaLanSamePassGfx = FALSE;
+    s32 vitaLanSkipDeferredGfx = FALSE;
+#endif
 #ifdef NATIVE_PORT
     s32 elideCatchupRender;
 #endif
@@ -1964,10 +1991,54 @@ void main_game_loop(void) {
 
 #ifdef NATIVE_PORT
     logicUpdateRate = video_logic_update_rate(sLogicUpdateRate);
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    /* The LAN manifest defines 30 authored ticks per second. Some Vita launch
+     * paths retain a 60 Hz presentation pacer, where fb_update() returns one
+     * field each frame. Running updateRate=2 on every such frame doubles game
+     * speed. Accumulate measured fields instead: author one canonical two-field
+     * tick only when two fields have elapsed, and hold the completed front image
+     * on the intervening presentation frame. */
+    if (gGameMode == GAMEMODE_INGAME &&
+        mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        unsigned int measuredFields =
+            logicUpdateRate > 0 ? (unsigned int)logicUpdateRate : 1u;
+        if (measuredFields > (unsigned int)LOGIC_30FPS) {
+            measuredFields = (unsigned int)LOGIC_30FPS;
+        }
+        sVitaLanCadenceFields += measuredFields;
+        if (sVitaLanCadenceFields < (unsigned int)LOGIC_30FPS) {
+            vitaLanSimulationStalled = TRUE;
+            logicUpdateRate = 0;
+        } else {
+            sVitaLanCadenceFields -= (unsigned int)LOGIC_30FPS;
+            logicUpdateRate = LOGIC_30FPS;
+        }
+        if (sVitaLanCadenceLogCount < 8u) {
+            char line[96];
+            snprintf(line, sizeof(line),
+                     "lan: cadence measured=%u carry=%u authored=%d",
+                     measuredFields, sVitaLanCadenceFields,
+                     logicUpdateRate);
+            mdkr_vita_boot_log(line);
+            sVitaLanCadenceLogCount++;
+        }
+    } else {
+        sVitaLanCadenceFields = 0u;
+        sVitaLanCadenceLogCount = 0u;
+    }
+#endif
     present_sched_note_game_update((unsigned)sLogicUpdateRate,
                                    (unsigned)logicUpdateRate);
     elideCatchupRender = present_sched_should_elide_render();
     present_sched_set_render_elided(elideCatchupRender != 0);
+#endif
+
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    vitaLanSamePassGfx =
+        gGameMode == GAMEMODE_INGAME &&
+        mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING;
+    vitaLanSkipDeferredGfx = sVitaLanSamePassGfxActive;
+    sVitaLanSamePassGfxActive = vitaLanSamePassGfx;
 #endif
 
     if (gScreenStatus == MESG_SKIP_BUFFER_SWAP) {
@@ -1985,14 +2056,101 @@ void main_game_loop(void) {
 #ifdef NATIVE_PORT
         && !elideCatchupRender
 #endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+        && !vitaLanSamePassGfx
+        && !vitaLanSkipDeferredGfx
+#endif
     ) {
         gfxtask_run_xbus(gDisplayLists[gSPTaskNum], gCurrDisplayList, 0);
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+        vitaLanGfxTaskSubmitted = TRUE;
+#endif
         gSPTaskNum += 1;
         gSPTaskNum &= 1;
     }
     if (gDrawFrameTimer) {
         gDrawFrameTimer--;
     }
+#if defined(__vita__)
+    /* The previous pass's audio service ran on the worker core alongside the
+     * display-list walk above; it must finish before game logic posts events. */
+    dkr_audio_service_join();
+#endif
+
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    {
+        MdkrVitaLanFailure failure;
+        const char *failureMessage;
+        if (gGameMode == GAMEMODE_INGAME &&
+            mdkr_vita_lan_take_failure(&failure, &failureMessage)) {
+            char failureText[128];
+            (void)failure;
+            snprintf(failureText, sizeof(failureText), "%s",
+                     failureMessage != NULL
+                         ? failureMessage
+                         : "MULTIPLAYER ERROR");
+            mdkr_online_race_pause_close();
+            menu_vita_lan_abort_race_presentation();
+            if (!vitaLanGfxTaskSubmitted) {
+                gSkipGfxTask = TRUE;
+            }
+            unload_level_game();
+            mdkr_vita_lan_stop();
+            load_menu_with_level_background(
+                MENU_TITLE, SPECIAL_MAP_ID_NO_LEVEL, 0);
+            menu_vita_lan_show_failure(failureText);
+            return;
+        }
+    }
+    {
+        MdkrVitaLanControl control;
+        MdkrMatchLaunchDescriptorV1 launch;
+        unsigned int trackId;
+        unsigned int vehicleMask;
+        unsigned int matchEpoch;
+        s32 canonicalPlayers;
+        if (gGameMode == GAMEMODE_INGAME &&
+            mdkr_vita_lan_take_control(
+                &control, &trackId, &vehicleMask, &matchEpoch)) {
+            mdkr_online_race_pause_close();
+            menu_vita_lan_abort_race_presentation();
+            if (!vitaLanGfxTaskSubmitted) {
+                gSkipGfxTask = TRUE;
+            }
+            unload_level_game();
+            if (control == MDKR_VITA_LAN_CONTROL_QUIT) {
+                mdkr_vita_lan_stop();
+                load_menu_with_level_background(
+                    MENU_TITLE, SPECIAL_MAP_ID_NO_LEVEL, 0);
+                menu_vita_lan_show_failure("MULTIPLAYER ENDED");
+                return;
+            }
+            if (!mdkr_vita_lan_restart_race(
+                    trackId, vehicleMask, matchEpoch, &launch)) {
+                mdkr_vita_lan_stop();
+                load_menu_with_level_background(
+                    MENU_TITLE, SPECIAL_MAP_ID_NO_LEVEL, 0);
+                menu_vita_lan_show_failure(
+                    "MULTIPLAYER START FAILED");
+                return;
+            }
+            canonicalPlayers = mdkr_online_prepare_direct_race(&launch);
+            gGameMode = GAMEMODE_INGAME;
+            load_next_ingame_level(canonicalPlayers, -1,
+                                   get_level_default_vehicle());
+            return;
+        }
+    }
+#endif
+
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (gGameMode == GAMEMODE_INGAME &&
+        (vitaLanSimulationStalled ||
+         mdkr_vita_lan_should_stall_race())) {
+        vitaLanSimulationStalled = TRUE;
+        goto vita_lan_hold_frame;
+    }
+#endif
 
     gCurrDisplayList = gDisplayLists[gSPTaskNum];
     gGameCurrMatrix = gMatrixHeap[gSPTaskNum];
@@ -2040,7 +2198,8 @@ void main_game_loop(void) {
          * preceding frame's bank without advancing its camera object; the
          * existing paused clear gate below then holds the authored pose. */
         if (overlayPaused
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
             /* Online the overlay is non-pausing chrome (below), so the paused
              * camera-bank restore must not fire over a still-running sim. */
             && !mdkr_online_race_pause_suppressed()
@@ -2063,7 +2222,8 @@ void main_game_loop(void) {
             previousOverlayPaused = overlayPaused;
         }
         if (overlayPaused
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
             /* In a LIVE online rollback race the app overlay must NOT become a
              * sim pause boundary: a zero-rate authored tick is exactly what a
              * later correction replay refuses (rollback_game_runtime.c's
@@ -2087,8 +2247,23 @@ void main_game_loop(void) {
     }
 #endif
 #ifdef NATIVE_PORT
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
     if (!mdkr_rollback_game_runtime_prepare_tick(
             (unsigned)logicUpdateRate)) {
+        if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING ||
+            mdkr_vita_lan_state() == MDKR_VITA_LAN_ERROR) {
+            mdkr_vita_boot_log(
+                "lan: synchronization failure in prepare_tick");
+            mdkr_vita_lan_report_failure_detail(
+                MDKR_VITA_LAN_FAILURE_SYNCHRONIZATION,
+                mdkr_rollback_game_runtime_failure_reason());
+            vitaLanSimulationStalled = TRUE;
+            goto vita_lan_hold_frame;
+        }
+#else
+    if (!mdkr_rollback_game_runtime_prepare_tick(
+            (unsigned)logicUpdateRate)) {
+#endif
 #if MDKR_ENABLE_ONLINE_BETA
         /* P0 CRASH FIX, mid-race sibling (beta only): a live online race whose
          * peer/input for THIS authored tick vanished -- a peer/console that
@@ -2150,8 +2325,18 @@ void main_game_loop(void) {
             break;
     }
 
-#if MDKR_ENABLE_ONLINE_BETA
-    /* NON-BLOCKING online race pause overlay (beta only): serviced AFTER the
+#ifdef NATIVE_PORT
+    /* Network slide loops are endpoint-local presentation. Latch only racer
+     * states backed by confirmed canonical input; predicted and replay-only
+     * states cannot start, move, or prolong a physical looping voice. */
+    racer_sound_capture_confirmed_network_slides(
+        mdkr_rollback_game_runtime_prepared_confirmed_mask());
+    racer_sound_update_network_slides(gGameMode == GAMEMODE_INGAME);
+#endif
+
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
+    /* NON-BLOCKING multiplayer race pause overlay: serviced AFTER the
      * mode dispatch so it reads this frame's canonical local-seat edges and
      * draws over the completed race frame -- and never during resimulation
      * (resim re-enters mode_game directly, not this loop), so overlay state is
@@ -2197,8 +2382,25 @@ void main_game_loop(void) {
      * end of mode_game(): transition_update above owns gameplay-readable fade
      * timers and must be included in the same tick snapshot. Presentation has
      * finished authoring and fb_update has not issued the next ticket yet. */
-    if (!mdkr_rollback_game_runtime_validate_boundary(
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (!vitaLanSimulationStalled &&
+#else
+    if (
+#endif
+        !mdkr_rollback_game_runtime_validate_boundary(
             (unsigned)logicUpdateRate)) {
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+        if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING ||
+            mdkr_vita_lan_state() == MDKR_VITA_LAN_ERROR) {
+            mdkr_vita_boot_log(
+                "lan: synchronization failure at tick boundary");
+            mdkr_vita_lan_report_failure_detail(
+                MDKR_VITA_LAN_FAILURE_SYNCHRONIZATION,
+                mdkr_rollback_game_runtime_failure_reason());
+            vitaLanSimulationStalled = TRUE;
+            goto vita_lan_hold_frame;
+        }
+#endif
 #if MDKR_ENABLE_ONLINE_BETA
         /* P0 CRASH FIX (beta only): a live online race whose peer/bootstrap input
          * vanished at race start -- the peer LOST (ICE failed) and the launcher's
@@ -2224,10 +2426,40 @@ void main_game_loop(void) {
     }
 #endif
 
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    goto vita_lan_finish_frame;
+
+vita_lan_hold_frame:
+    /* A display list retains pointers into two-bank matrix/vertex/triangle
+     * pools. Rebuilding or replaying it during a simulation stall can observe
+     * storage already rotated for another task. Author no geometry: truncate
+     * this bank and let the platform retain the last completed front image. */
+    gCurrDisplayList = gDisplayLists[gSPTaskNum];
+
+vita_lan_finish_frame:
+#endif
     gDPFullSync(gCurrDisplayList++);
     gSPEndDisplayList(gCurrDisplayList++);
 
     copy_viewports_to_stack();
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    /* Online race tasks never survive across main-loop passes. An authored tick
+     * submits its complete list here; a stalled pass reaches this point with a
+     * trivial list and submits nothing, so the platform holds the front image
+     * without exposing partially advanced viewport/scissor state. */
+    if (vitaLanSamePassGfx && !vitaLanSimulationStalled &&
+        gDrawFrameTimer == 0 && !elideCatchupRender) {
+        gfxtask_run_xbus(gDisplayLists[gSPTaskNum], gCurrDisplayList, 0);
+        vitaLanGfxTaskSubmitted = TRUE;
+        gSPTaskNum += 1;
+        gSPTaskNum &= 1;
+    }
+    if (vitaLanGfxTaskSubmitted) {
+        gScreenStatus = gfxtask_wait();
+    } else if (gDrawFrameTimer == 1) {
+        gDrawFrameTimer = 0;
+    }
+#else
     if (gDrawFrameTimer != 1) {
         if (gSkipGfxTask == FALSE
 #ifdef NATIVE_PORT
@@ -2239,6 +2471,7 @@ void main_game_loop(void) {
     } else {
         gDrawFrameTimer = 0;
     }
+#endif
     gSkipGfxTask = FALSE;
     mempool_free_queue_clear();
 #ifdef NATIVE_PORT
@@ -2326,13 +2559,32 @@ void load_level_game(s32 levelId, s32 numberOfPlayers, s32 entranceId, Vehicle v
     mempool_free_timer(2);
     rumble_init(TRUE);
 #ifdef NATIVE_PORT
+    /* The level's own assets are in place; queue the HD replacements this
+     * level needed last time before the first frame draws with them. */
+    mdkr_mod_texture_preload_level_begin(levelId);
+#if defined(__vita__)
+    /* Single-player only: a LAN peer must never wait on this host's card. The
+     * screen is still on the transition, so hold it until the recorded HD
+     * replacements are decoded, then retire the wait from game time. */
+    if (
+#if defined(MDKR_ENABLE_VITA_LAN)
+        mdkr_vita_lan_state() == MDKR_VITA_LAN_IDLE &&
+#endif
+        mdkr_mod_texture_preload_hold()) {
+        platform_vi_request_pace_rebase();
+    }
+#endif
     if (!mdkr_rollback_game_runtime_level_ready()) {
         fprintf(stderr,
                 "[ROLLBACK] engine startup rejected before authored tick one\n");
         /* The level itself is completely initialized and can follow the normal
          * owner-last host teardown. A startup/admission failure must never turn
          * an unsupported online room into an abort or crash loop. */
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+        mdkr_vita_lan_report_failure(MDKR_VITA_LAN_FAILURE_STARTUP);
+#else
         platform_request_exit(EXIT_FAILURE);
+#endif
         return;
     }
 #endif
@@ -2377,6 +2629,7 @@ static void presentation_history_retire(void) {
 void unload_level_game(void) {
     mempool_free_timer(0);
 #ifdef NATIVE_PORT
+    mdkr_mod_texture_preload_level_end();
     mdkr_rollback_game_runtime_level_end();
 #endif
     if (gSkipGfxTask == FALSE) {
@@ -2535,8 +2788,9 @@ void mode_game(s32 updateRate) {
             if (buttonPressedInputs & START_BUTTON && level_properties_get() == 0 && gDrumstickSceneLoadTimer == 0 &&
                 gGameMode == GAMEMODE_INGAME && gPostRaceViewPort == FALSE && gLevelLoadTimer == 0 &&
                 gPauseLockTimer == 0) {
-#if MDKR_ENABLE_ONLINE_BETA
-                /* ONLINE PAUSE CRASH FIX (beta only): in an online rollback race
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
+                /* ONLINE PAUSE CRASH FIX: in an online rollback race
                  * the retail pause NEVER engages -- this branch consumes the
                  * CANONICAL input of every seat, so a START press (local or the
                  * remote player's, live or replayed by a correction) would pause
@@ -3660,7 +3914,8 @@ Settings *get_settings(void) {
 s8 is_game_paused(void) {
 #ifdef NATIVE_PORT
     if (platformOverlayWantsPause()
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
         /* Online the app overlay never pauses the sim (main_game_loop keeps
          * the clock running under it), so it must be invisible to the sim's
          * pause query too: this reads LIVE overlay state, and a TRUE here

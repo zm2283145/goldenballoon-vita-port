@@ -95,7 +95,64 @@ int main(void) {
     invalid = request(&fixture, 12u, 102u, 0u);
     invalid.start = NULL;
     assert(!mdkr_rollback_audio_request(&adapter, &invalid, false));
+    assert(adapter.last_rejection == MDKR_ROLLBACK_AUDIO_REJECT_INVALID);
     assert(adapter.stats.rejected == 1u);
+
+    /* A current authored tick can already have an identical journal entry
+     * after correction/re-arm. The event journal treats that as idempotent;
+     * the audio binding must do the same rather than failing the boundary.
+     * SOUND_UNK_05 is the exact surface sound observed on hardware. */
+    {
+        const unsigned starts_before = fixture.starts;
+        MdkrRollbackAudioRequest surface =
+            request(&fixture, 1923u, 0x19230005u, 0u);
+        MdkrRollbackAudioRequest next_surface =
+            request(&fixture, 1924u, 0x19240005u, 0u);
+        MdkrRollbackAudioRequest rebound;
+        surface.sound_id = 5u;
+        next_surface.sound_id = 5u;
+
+        assert(mdkr_rollback_audio_request(&adapter, &surface, false));
+        assert(fixture.starts == starts_before + 1u);
+        assert(mdkr_rollback_audio_request(&adapter, &surface, false));
+        assert(fixture.starts == starts_before + 1u);
+        assert(adapter.stats.duplicates == 1u);
+        assert(mdkr_rollback_audio_request(&adapter, &surface, true));
+        assert(adapter.stats.suppressed == 2u);
+        assert(mdkr_rollback_audio_request(&adapter, &next_surface, false));
+        assert(fixture.starts == starts_before + 2u);
+
+        /* A correction can hand the same sound/tick/ordinal to a different
+         * emitter slot (hardware: AUDIO_REQ_SLOT t=623 k=68 v=4). That is a
+         * rebind, not a fatal binding change, and must not restart audio. */
+        rebound = surface;
+        rebound.handle_slot = (void *)(uintptr_t)0x5678u;
+        assert(mdkr_rollback_audio_request(&adapter, &rebound, true));
+        assert(adapter.stats.rebound == 1u);
+        assert(fixture.starts == starts_before + 2u);
+        {
+            unsigned index;
+            bool found = false;
+            for (index = 0u; index < adapter.count; index++) {
+                if (adapter.entries[index].request.id.emitter ==
+                    surface.id.emitter &&
+                    adapter.entries[index].request.id.tick ==
+                    surface.id.tick) {
+                    assert(adapter.entries[index].request.handle_slot ==
+                           rebound.handle_slot);
+                    found = true;
+                }
+            }
+            assert(found);
+        }
+
+        /* Any other binding change is still a genuine mismatch. */
+        rebound.sound_id = 6u;
+        assert(!mdkr_rollback_audio_request(&adapter, &rebound, true));
+        assert(adapter.last_rejection == MDKR_ROLLBACK_AUDIO_REJECT_BINDING);
+        assert(adapter.last_rejection_detail ==
+               MDKR_ROLLBACK_AUDIO_BINDING_SOUND);
+    }
 
     assert(mdkr_rollback_audio_defer_command(&adapter, &command));
     command.value = 20u;

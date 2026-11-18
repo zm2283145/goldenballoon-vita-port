@@ -129,3 +129,5 @@ mdkr64.ini.lock
 # history.
 *.psp2dmp
 mdkr_boot*.log
+# Local Vita package staging (deploy/test builds), never source.
+/local/

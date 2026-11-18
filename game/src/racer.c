@@ -62,6 +62,7 @@
 #include "camera_obstruction_runtime.h"
 #include "enh_ai_difficulty.h"
 #include "net/match_input_runtime.h"
+#include "net/net_roster_runtime.h"
 #include "mdkr_adventure.h"
 #include "gameplay_event_trace.h"
 #include "modern_character_runtime.h"
@@ -2355,8 +2356,7 @@ void func_80046524(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         racer->steerVisualRotation += (var_v1 * updateRate) >> 3;
         if ((var_v1 < 0x400 && var_v1 > -0x400) || (racer->playerIndex == PLAYER_COMPUTER)) {
             if (racer->playerIndex != PLAYER_COMPUTER) {
-                sound_play_spatial(SOUND_ZIP_PAD_BOOST, obj->trans.x_position, obj->trans.y_position,
-                                   obj->trans.z_position, NULL);
+                racer_play_sound(obj, SOUND_ZIP_PAD_BOOST);
                 play_random_character_voice(obj, SOUND_VOICE_CHARACTER_POSITIVE, 8, 0x80 | 0x2);
             }
             racer->boostTimer = normalise_time(45);
@@ -3587,8 +3587,7 @@ void func_80049794(s32 updateRate, f32 updateRateF, Object *obj, Object_Racer *r
         if (((steerVisualRotationOffset < 0x400) && (steerVisualRotationOffset > -0x400)) ||
             (racer->playerIndex == PLAYER_COMPUTER)) {
             if (racer->playerIndex != PLAYER_COMPUTER) {
-                sound_play_spatial(SOUND_ZIP_PAD_BOOST, obj->trans.x_position, obj->trans.y_position,
-                                   obj->trans.z_position, NULL);
+                racer_play_sound(obj, SOUND_ZIP_PAD_BOOST);
                 play_random_character_voice(obj, SOUND_VOICE_CHARACTER_POSITIVE, SOUND_NUMBER_OF_RACERS, 0x80 | 0x2);
             }
             racer->boostTimer = normalise_time(45);
@@ -4823,6 +4822,9 @@ void obj_init_racer(Object *obj, LevelObjectEntry_Racer *racer) {
     tempRacer->shieldSoundMask = NULL;
     tempRacer->bananaSoundMask = NULL;
     tempRacer->weaponSoundMask = NULL;
+#ifdef NATIVE_PORT
+    tempRacer->networkSlideSound = NULL;
+#endif
     tempRacer->unk220 = 0;
     tempRacer->unk21C = NULL;
     if (tempRacer->playerIndex != PLAYER_COMPUTER && gTajInteractStatus == TAJ_WANDER) {
@@ -5693,7 +5695,11 @@ void update_player_racer(Object *obj, s32 updateRate) {
                 tempRacer->delaySoundTimer -= updateRate;
             } else {
                 tempRacer->delaySoundTimer = 0;
-                if (tempRacer->playerIndex == PLAYER_COMPUTER) {
+                if (tempRacer->playerIndex == PLAYER_COMPUTER
+#ifdef NATIVE_PORT
+                    || mdkr_net_roster_runtime_active()
+#endif
+                ) {
                     audspat_play_sound_at_position(tempRacer->delaySoundID, obj->trans.x_position,
                                                    obj->trans.y_position, obj->trans.z_position,
                                                    AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, NULL);
@@ -6374,12 +6380,17 @@ void func_80050A28(Object *obj, Object_Racer *racer, s32 updateRate, f32 updateR
             obj->particleEmittersEnabled |= 0x2000 | 0x800;
         }
         if (racer->drift_direction != 0 || racer->drifting != 0 || racer->unk1FB != 0) {
+#ifdef NATIVE_PORT
+            if (!mdkr_net_roster_runtime_active())
+#endif
+            {
             if (racer->unk10 == 0) {
                 sound_play_spatial(SOUND_CAR_SLIDE, obj->trans.x_position, obj->trans.y_position, obj->trans.z_position,
                                    &racer->unk10);
             } else {
                 audspat_calculate_echo((SoundHandle) (uintptr_t) racer->unk10, obj->trans.x_position, obj->trans.y_position,
                                        obj->trans.z_position); // type cast required to match
+            }
             }
             if (racer->unk14) {
                 sndp_stop((SoundHandle) (uintptr_t) racer->unk14); // type cast required to match
@@ -8495,11 +8506,23 @@ void handle_racer_items(Object *obj, Object_Racer *racer, UNUSED s32 updateRate)
                                                            obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
                                                            NULL);
                         } else {
+#ifdef NATIVE_PORT
+                            if (mdkr_net_roster_runtime_active()) {
+                                audspat_play_sound_at_position(
+                                    soundID, obj->trans.x_position,
+                                    obj->trans.y_position,
+                                    obj->trans.z_position,
+                                    AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, NULL);
+                                racer->weaponSoundMask = NULL;
+                            } else
+#endif
+                            {
                             if (racer->weaponSoundMask) {
                                 sndp_stop(racer->weaponSoundMask);
                             }
                             sound_play_spatial(soundID, obj->trans.x_position, obj->trans.y_position,
                                                obj->trans.z_position, &racer->weaponSoundMask);
+                            }
                         }
                     }
                 }
@@ -8532,7 +8555,18 @@ void play_char_horn_sound(Object *obj, Object_Racer *racer) {
         play_random_character_voice(obj, SOUND_VOICE_CHARACTER_POSITIVE, 8, 130);
     } else {
         // Play character's horn sound
+#ifdef NATIVE_PORT
+        if (mdkr_net_roster_runtime_active()) {
+            audspat_play_sound_at_position(
+                racer->characterId + SOUND_HORN_CHARACTER,
+                obj->trans.x_position, obj->trans.y_position,
+                obj->trans.z_position,
+                AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, NULL);
+        } else
+#endif
+        {
         racer_play_sound(obj, racer->characterId + SOUND_HORN_CHARACTER);
+        }
     }
 }
 
@@ -8673,6 +8707,15 @@ void racer_activate_magnet(Object *obj, Object_Racer *racer, s32 updateRate) {
 void racer_play_sound(Object *obj, s32 soundID) {
     Object_Racer *racer = obj->racer;
     if (gCurrentPlayerIndex != PLAYER_COMPUTER && racer->exitObj == NULL) {
+#ifdef NATIVE_PORT
+        if (mdkr_net_roster_runtime_active()) {
+            audspat_play_sound_at_position(
+                (u16)soundID, obj->trans.x_position, obj->trans.y_position,
+                obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
+                NULL);
+            return;
+        }
+#endif
         sound_play_spatial(soundID, obj->trans.x_position, obj->trans.y_position, obj->trans.z_position, NULL);
     }
 }
@@ -8697,6 +8740,7 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
     s32 soundIndex;
     Object_Racer *tempRacer;
 #ifdef NATIVE_PORT
+    s32 chooseVoice;
     static const u16 tajPositiveVoices[] = {
         SOUND_VOICE_TAJ_WAHEY,
         SOUND_VOICE_TAJ_HOHO,
@@ -8723,7 +8767,20 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
                 tempRacer->soundMask = 0;
             }
         }
+#ifdef NATIVE_PORT
+        /*
+         * A physical voice can finish at a different authored tick on two
+         * machines (mixer pressure and device timing differ). In an online
+         * race it must not gate gameplay RNG: choose and remember the voice on
+         * every canonical request, but only submit it when the local device
+         * has a free handle. Offline retains the original handle-gated order.
+         */
+        chooseVoice = tempRacer->soundMask == NULL ||
+            mdkr_net_roster_runtime_active();
+        if (chooseVoice && (flags != 3 || rand_range(0, 1))) {
+#else
         if (tempRacer->soundMask == NULL && (flags != 3 || rand_range(0, 1))) {
+#endif
             tempRacer->unk2A = soundID;
 #ifdef NATIVE_PORT
             if (taj_physics_is_taj(tempRacer)) {
@@ -8755,9 +8812,15 @@ void play_random_character_voice(Object *obj, s32 soundID, s32 range, s32 flags)
 #ifdef NATIVE_PORT
             }
 #endif
-            audspat_play_sound_at_position(soundIndex, obj->trans.x_position, obj->trans.y_position,
-                                           obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
-                                           &tempRacer->soundMask);
+#ifdef NATIVE_PORT
+            if (tempRacer->soundMask == NULL) {
+#endif
+                audspat_play_sound_at_position(soundIndex, obj->trans.x_position, obj->trans.y_position,
+                                               obj->trans.z_position, AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
+                                               &tempRacer->soundMask);
+#ifdef NATIVE_PORT
+            }
+#endif
             tempRacer->lastSoundID = soundIndex;
         }
     }

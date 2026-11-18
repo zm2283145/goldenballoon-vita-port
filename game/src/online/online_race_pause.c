@@ -44,7 +44,6 @@
 extern s32 gGameMode;
 /* The presentation scheduler's simulation-tick ordinal (present_sched.c) --
  * witness-line observability only, never authority. */
-extern int g_simTickCounter;
 
 enum {
     MDKR_ONLINE_PAUSE_ROW_CONTINUE = 0,
@@ -181,4 +180,314 @@ void mdkr_online_race_overlay_frame(s32 updateRate) {
     online_race_pause_draw();
 }
 
-#endif /* MDKR_ENABLE_ONLINE_BETA */
+#elif defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+
+#include "PR/os_cont.h"
+#include "asset_enums.h"
+#include "enums.h"
+#include "font.h"
+#include "game.h"
+#include "joypad.h"
+#include "macros.h"
+#include "rcp_dkr.h"
+#include "thread3_main.h"
+#include "net/match_input_runtime.h"
+#include "net/net_roster_runtime.h"
+#include "vita_lan.h"
+
+#include <stdio.h>
+
+extern s32 gGameMode;
+extern Gfx *gCurrDisplayList;
+extern int g_simTickCounter;
+
+enum {
+    VITA_PAUSE_CONTINUE = 0,
+    VITA_PAUSE_RESTART,
+    VITA_PAUSE_SELECT_TRACK,
+    VITA_PAUSE_QUIT
+};
+
+static const u8 sVitaLanTrackIds[] = {
+    5u, 3u, 29u, 7u, 13u, 6u, 9u, 28u, 8u, 4u,
+    10u, 30u, 19u, 18u, 20u, 31u, 17u, 32u, 33u, 15u
+};
+
+static struct {
+    u8 open;
+    u8 row;
+    u8 track_picker;
+    u8 track_index;
+    u8 dialogue_open;
+    u8 suppress_until_release;
+    u16 raw_buttons;
+    u16 raw_pressed;
+    u16 blink;
+} sVitaRacePause;
+
+s32 mdkr_online_race_pause_suppressed(void) {
+    return mdkr_match_input_runtime_active() ? 1 : 0;
+}
+
+static void vita_pause_dialogue_begin(s32 optionCount, s32 halfWidth) {
+    s32 halfHeight = ((optionCount * 16) + 28) >> 1;
+    clear_dialogue_box_open_flag(7);
+    dialogue_clear(7);
+    set_current_dialogue_box_coords(
+        7, 160 - halfWidth, 120 - halfHeight,
+        160 + halfWidth, 120 + halfHeight);
+    set_current_dialogue_background_colour(7, 64, 64, 255, 160);
+    set_dialogue_font(7, ASSET_FONTS_FUNFONT);
+    set_current_text_background_colour(7, 128, 128, 255, 0);
+    set_current_text_colour(7, 0, 255, 0, 128, 255);
+    sVitaRacePause.dialogue_open = 1;
+}
+
+static void vita_pause_dialogue_row(
+    s32 y, const char *text, int selected) {
+    s32 alpha = (sVitaRacePause.blink & 0x3F) * 8;
+    if (alpha > 255) {
+        alpha = 511 - alpha;
+    }
+    set_current_text_colour(7, 255, 255, 255,
+                            selected ? alpha : 0, 255);
+    render_dialogue_text(7, POS_CENTRED, y, (char *)text, 1,
+                         ALIGN_MIDDLE_CENTER);
+}
+
+static unsigned int vita_track_index(unsigned int trackId) {
+    unsigned int index;
+    for (index = 0; index < ARRAY_COUNT(sVitaLanTrackIds); index++) {
+        if (sVitaLanTrackIds[index] == trackId) {
+            return index;
+        }
+    }
+    return 0;
+}
+
+static unsigned int vita_track_vehicle_mask(unsigned int trackId) {
+    unsigned int mask =
+        (unsigned int)leveltable_vehicle_usable((s32)trackId) & 0x07u;
+    if (trackId == 15u) {
+        mask &= ~(1u << VEHICLE_HOVERCRAFT);
+    } else if (trackId == 28u) {
+        mask &= ~(1u << VEHICLE_PLANE);
+    }
+    return mask;
+}
+
+static void vita_pause_draw_root(int host) {
+    vita_pause_dialogue_begin(host ? 4 : 2, 105);
+    set_current_text_colour(7, 0, 255, 0, 128, 255);
+    render_dialogue_text(7, POS_CENTRED, 12, "PAUSE OPTIONS", 1,
+                         ALIGN_MIDDLE_CENTER);
+    vita_pause_dialogue_row(
+        32, "CONTINUE", sVitaRacePause.row == VITA_PAUSE_CONTINUE);
+    if (host) {
+        vita_pause_dialogue_row(
+            48, "RESTART RACE",
+            sVitaRacePause.row == VITA_PAUSE_RESTART);
+        vita_pause_dialogue_row(
+            64, "SELECT TRACK",
+            sVitaRacePause.row == VITA_PAUSE_SELECT_TRACK);
+        vita_pause_dialogue_row(
+            80, "QUIT GAME", sVitaRacePause.row == VITA_PAUSE_QUIT);
+    } else {
+        vita_pause_dialogue_row(
+            48, "QUIT GAME", sVitaRacePause.row == VITA_PAUSE_QUIT);
+    }
+    open_dialogue_box(7);
+}
+
+static void vita_pause_draw_track(unsigned int trackId, int host) {
+    char *name = level_name((s32)trackId);
+    vita_pause_dialogue_begin(host ? 3 : 2, 125);
+    set_current_text_colour(7, 0, 255, 0, 128, 255);
+    render_dialogue_text(7, POS_CENTRED, 12, "SELECT TRACK", 1,
+                         ALIGN_MIDDLE_CENTER);
+    vita_pause_dialogue_row(
+        36, name != NULL ? name : "UNKNOWN TRACK", host);
+    if (host) {
+        vita_pause_dialogue_row(56, "A: START   B: BACK", 0);
+    } else {
+        vita_pause_dialogue_row(52, "HOST SELECTING", 0);
+    }
+    open_dialogue_box(7);
+}
+
+static void vita_pause_reset(void) {
+    if (sVitaRacePause.open || sVitaRacePause.track_picker) {
+        sVitaRacePause.suppress_until_release = 1;
+    }
+    if (sVitaRacePause.track_picker && mdkr_vita_lan_is_host()) {
+        mdkr_vita_lan_set_track_picker(0, 0);
+    }
+    sVitaRacePause.open = 0;
+    sVitaRacePause.row = VITA_PAUSE_CONTINUE;
+    sVitaRacePause.track_picker = 0;
+    if (sVitaRacePause.dialogue_open) {
+        dialogue_close(7);
+        dialogue_clear(7);
+        sVitaRacePause.dialogue_open = 0;
+    }
+}
+
+void mdkr_online_race_pause_close(void) {
+    vita_pause_reset();
+}
+
+void mdkr_online_race_pause_filter_local_input(MdkrPadSample *input) {
+    unsigned int remoteTrack;
+    int capture;
+    if (input == NULL) {
+        return;
+    }
+    sVitaRacePause.raw_pressed =
+        input->buttons & (u16)~sVitaRacePause.raw_buttons;
+    sVitaRacePause.raw_buttons = input->buttons;
+    if (sVitaRacePause.suppress_until_release &&
+        input->buttons == 0 && input->stick_x == 0 &&
+        input->stick_y == 0) {
+        sVitaRacePause.suppress_until_release = 0;
+    }
+    capture = sVitaRacePause.open ||
+              sVitaRacePause.suppress_until_release ||
+              (!mdkr_vita_lan_is_host() &&
+               mdkr_vita_lan_track_picker(&remoteTrack));
+    if (capture) {
+        input->buttons = 0;
+        input->stick_x = 0;
+        input->stick_y = 0;
+        input->present = 1;
+    }
+}
+
+void mdkr_online_race_overlay_frame(s32 updateRate) {
+    u32 pressed;
+    unsigned int remoteTrack;
+    int host;
+    unsigned int rowCount;
+    (void)updateRate;
+    sVitaRacePause.blink =
+        (u16)(sVitaRacePause.blink + (updateRate > 0 ? updateRate : 1));
+
+    if (!mdkr_match_input_runtime_active() ||
+        gGameMode != GAMEMODE_INGAME ||
+        is_postrace_viewport_active()) {
+        vita_pause_reset();
+        return;
+    }
+    host = mdkr_vita_lan_is_host();
+    pressed = sVitaRacePause.raw_pressed;
+    sVitaRacePause.raw_pressed = 0;
+
+    if (!host && mdkr_vita_lan_track_picker(&remoteTrack) &&
+        !sVitaRacePause.open) {
+        vita_pause_draw_track(remoteTrack, 0);
+        if (pressed & START_BUTTON) {
+            sVitaRacePause.open = 1;
+            sVitaRacePause.row = VITA_PAUSE_CONTINUE;
+        }
+        return;
+    }
+
+    if (!sVitaRacePause.open) {
+        if (pressed & START_BUTTON) {
+            sVitaRacePause.open = 1;
+            sVitaRacePause.row = VITA_PAUSE_CONTINUE;
+        }
+        return;
+    }
+
+    if (sVitaRacePause.track_picker) {
+        if (pressed & (START_BUTTON | B_BUTTON)) {
+            mdkr_vita_lan_set_track_picker(0, 0);
+            sVitaRacePause.track_picker = 0;
+            sVitaRacePause.row = VITA_PAUSE_SELECT_TRACK;
+        } else {
+            if (pressed & (L_JPAD | U_JPAD)) {
+                sVitaRacePause.track_index =
+                    sVitaRacePause.track_index == 0
+                        ? ARRAY_COUNT(sVitaLanTrackIds) - 1
+                        : sVitaRacePause.track_index - 1;
+                mdkr_vita_lan_set_track_picker(
+                    1, sVitaLanTrackIds[sVitaRacePause.track_index]);
+            } else if (pressed & (R_JPAD | D_JPAD)) {
+                sVitaRacePause.track_index =
+                    (sVitaRacePause.track_index + 1) %
+                    ARRAY_COUNT(sVitaLanTrackIds);
+                mdkr_vita_lan_set_track_picker(
+                    1, sVitaLanTrackIds[sVitaRacePause.track_index]);
+            }
+            if (pressed & A_BUTTON) {
+                unsigned int trackId =
+                    sVitaLanTrackIds[sVitaRacePause.track_index];
+                unsigned int vehicleMask =
+                    vita_track_vehicle_mask(trackId);
+                if (mdkr_vita_lan_request_control(
+                        MDKR_VITA_LAN_CONTROL_SELECT_TRACK,
+                        trackId, vehicleMask)) {
+                    vita_pause_reset();
+                    return;
+                }
+            }
+        }
+        vita_pause_draw_track(
+            sVitaLanTrackIds[sVitaRacePause.track_index], 1);
+        return;
+    }
+
+    if (pressed & (START_BUTTON | B_BUTTON)) {
+        vita_pause_reset();
+        return;
+    }
+    rowCount = host ? 4u : 2u;
+    if (!host && (pressed & (U_JPAD | D_JPAD))) {
+        sVitaRacePause.row =
+            sVitaRacePause.row == VITA_PAUSE_CONTINUE
+                ? VITA_PAUSE_QUIT
+                : VITA_PAUSE_CONTINUE;
+    } else if (host && (pressed & U_JPAD)) {
+        sVitaRacePause.row =
+            sVitaRacePause.row == 0 ? (u8)(rowCount - 1)
+                                    : sVitaRacePause.row - 1;
+    } else if (host && (pressed & D_JPAD)) {
+        sVitaRacePause.row =
+            (u8)((sVitaRacePause.row + 1) % rowCount);
+    }
+    if (pressed & A_BUTTON) {
+        if (sVitaRacePause.row == VITA_PAUSE_CONTINUE) {
+            vita_pause_reset();
+            return;
+        }
+        if (host && sVitaRacePause.row == VITA_PAUSE_RESTART) {
+            if (mdkr_vita_lan_request_control(
+                    MDKR_VITA_LAN_CONTROL_RESTART, 0, 0)) {
+                vita_pause_reset();
+                return;
+            }
+        } else if (host &&
+                   sVitaRacePause.row == VITA_PAUSE_SELECT_TRACK) {
+            unsigned int currentTrack = 0;
+            const MdkrMatchLaunchDescriptorV1 *launch =
+                mdkr_net_roster_runtime_launch_descriptor();
+            if (launch != NULL) {
+                currentTrack = launch->manifest.track_id;
+            }
+            sVitaRacePause.track_index =
+                (u8)vita_track_index(currentTrack);
+            sVitaRacePause.track_picker = 1;
+            mdkr_vita_lan_set_track_picker(
+                1, sVitaLanTrackIds[sVitaRacePause.track_index]);
+        } else if (sVitaRacePause.row == VITA_PAUSE_QUIT) {
+            if (mdkr_vita_lan_request_control(
+                    MDKR_VITA_LAN_CONTROL_QUIT, 0, 0)) {
+                vita_pause_reset();
+                return;
+            }
+        }
+    }
+    vita_pause_draw_root(host);
+}
+
+#endif /* online beta / Vita LAN */

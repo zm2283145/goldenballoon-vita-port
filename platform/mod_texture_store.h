@@ -134,6 +134,20 @@ int  mdkr_mod_texture_lookup_rice_async(uint32_t crc, int fmt, int siz,
  * or was never queued. Also collects finished work from the helper thread. */
 int  mdkr_mod_texture_rice_pending(uint32_t crc, int fmt, int siz);
 
+/* Queue a Rice identity for the decode helper without wanting its pixels yet
+ * (level preload). Returns 1 when it is queued or already resolved, 0 when no
+ * pack supplies it or the queue is full. Never blocks and never decodes on
+ * the calling thread. */
+int  mdkr_mod_texture_prefetch_rice(uint32_t crc, int fmt, int siz);
+
+/* Rough measure of preload progress: identities still being decoded. */
+int  mdkr_mod_texture_pending_count(void);
+
+/* Decoded bytes the store currently holds, and the cap it holds them under.
+ * A preloader uses these to stop before it evicts what it already decoded. */
+size_t mdkr_mod_texture_resident_bytes(void);
+size_t mdkr_mod_texture_cache_bytes_max(void);
+
 /* True when a lookup could possibly succeed: overrides on, a registry bound,
  * and at least one enabled pack in it. The renderer tests this before hashing
  * a texture, because computing a digest for a store that cannot answer is the

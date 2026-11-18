@@ -26,8 +26,22 @@
 #ifdef NATIVE_PORT
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "net/local_listener_mix.h"
 #include "net/net_roster_runtime.h"
+
+typedef struct NetworkSlidePresentation {
+    f32 x;
+    f32 y;
+    f32 z;
+    u8 valid;
+    u8 sliding;
+    u8 raceFinished;
+} NetworkSlidePresentation;
+
+static SoundHandle sNetworkSlideSounds[MDKR_MATCH_SLOTS];
+static NetworkSlidePresentation
+    sNetworkSlidePresentation[MDKR_MATCH_SLOTS];
 #endif
 
 #ifdef NATIVE_PORT
@@ -70,8 +84,9 @@ Object_Racer *gSoundRacerObj;
 /******************************/
 
 #ifdef NATIVE_PORT
-static void racer_sound_endpoint_mix(
-    Object *source, s32 sourceSlot, Camera *cameras, s32 numCameras,
+static void racer_sound_endpoint_position_mix(
+    f32 sourceX, f32 sourceY, f32 sourceZ, s32 sourceSlot,
+    s32 sourceRaceFinished, Camera *cameras, s32 numCameras,
     s32 fallbackVolume, s32 fallbackPan, MdkrLocalListenerMix *mix) {
     s32 candidateVolume[MDKR_MATCH_SLOTS] = {0, 0, 0, 0};
     u8 candidatePan[MDKR_MATCH_SLOTS] = {64, 64, 64, 64};
@@ -89,16 +104,12 @@ static void racer_sound_endpoint_mix(
     for (listener = 0;
          listener < numCameras && listener < MDKR_MATCH_SLOTS;
          listener++) {
-        const f32 dx = source->trans.x_position -
-                       cameras[listener].trans.x_position;
-        const f32 dy = source->trans.y_position -
-                       cameras[listener].trans.y_position;
-        const f32 dz = source->trans.z_position -
-                       cameras[listener].trans.z_position;
+        const f32 dx = sourceX - cameras[listener].trans.x_position;
+        const f32 dy = sourceY - cameras[listener].trans.y_position;
+        const f32 dz = sourceZ - cameras[listener].trans.z_position;
         const f32 distanceSquared = dx * dx + dy * dy + dz * dz;
         f32 scale = 0.0f;
-        if (listener == sourceSlot && source->racer != NULL &&
-            !source->racer->raceFinished &&
+        if (listener == sourceSlot && !sourceRaceFinished &&
             !check_if_showing_cutscene_camera()) {
             scale = 1.0f;
             candidatePan[listener] = 64u;
@@ -118,6 +129,16 @@ static void racer_sound_endpoint_mix(
         mix->listener_count = 0u;
         mix->endpoint_local = false;
     }
+}
+
+static void racer_sound_endpoint_mix(
+    Object *source, s32 sourceSlot, Camera *cameras, s32 numCameras,
+    s32 fallbackVolume, s32 fallbackPan, MdkrLocalListenerMix *mix) {
+    racer_sound_endpoint_position_mix(
+        source->trans.x_position, source->trans.y_position,
+        source->trans.z_position, sourceSlot,
+        source->racer != NULL ? source->racer->raceFinished : TRUE,
+        cameras, numCameras, fallbackVolume, fallbackPan, mix);
 }
 
 static void racer_sound_endpoint_brake_mix(
@@ -870,6 +891,151 @@ void racer_sound_plane(Object *obj, UNUSED u32 buttonsPressed, u32 buttonsHeld, 
         }
     }
 }
+
+#ifdef NATIVE_PORT
+static void racer_sound_stop_network_slide_slot(s32 slot) {
+    if (slot >= 0 && slot < MDKR_MATCH_SLOTS) {
+        sndp_stop_and_detach(&sNetworkSlideSounds[slot]);
+    }
+}
+
+static void racer_sound_stop_network_slides(void) {
+    s32 slot;
+    for (slot = 0; slot < MDKR_MATCH_SLOTS; slot++) {
+        racer_sound_stop_network_slide_slot(slot);
+    }
+    memset(sNetworkSlidePresentation, 0,
+           sizeof(sNetworkSlidePresentation));
+}
+
+void racer_sound_capture_confirmed_network_slides(u8 confirmedMask) {
+    Object **racers;
+    s32 racerCount;
+    s32 index;
+
+    for (index = 0; index < MDKR_MATCH_SLOTS; index++) {
+        if ((confirmedMask & (1u << index)) != 0u) {
+            sNetworkSlidePresentation[index].valid = FALSE;
+        }
+    }
+    racers = get_racer_objects(&racerCount);
+    for (index = 0; racers != NULL && index < racerCount; index++) {
+        Object *obj = racers[index];
+        Object_Racer *racer;
+        NetworkSlidePresentation *state;
+        s32 slot;
+
+        if (obj == NULL || obj->racer == NULL) {
+            continue;
+        }
+        racer = obj->racer;
+        slot = racer->playerIndex;
+        if (slot < 0 || slot >= MDKR_MATCH_SLOTS) {
+            continue;
+        }
+        if ((confirmedMask & (1u << slot)) == 0u) {
+            continue;
+        }
+        state = &sNetworkSlidePresentation[slot];
+        state->x = obj->trans.x_position;
+        state->y = obj->trans.y_position;
+        state->z = obj->trans.z_position;
+        state->valid = TRUE;
+        state->raceFinished = racer->raceFinished;
+        state->sliding =
+            racer->vehicleID == VEHICLE_CAR && !racer->raceFinished &&
+            (racer->drift_direction != 0 || racer->drifting != 0 ||
+             racer->unk1FB != 0);
+    }
+}
+
+void racer_sound_update_network_slides(s32 raceActive) {
+    SoundData *soundTable;
+    Camera *cameras;
+    const MdkrNetRoster *roster = mdkr_net_roster_runtime_get();
+    s32 soundCount;
+    s32 slot;
+
+    if (!raceActive || roster == NULL) {
+        racer_sound_stop_network_slides();
+        return;
+    }
+    sound_table_properties(&soundTable, NULL, &soundCount);
+    if (soundTable == NULL || SOUND_CAR_SLIDE >= soundCount) {
+        racer_sound_stop_network_slides();
+        return;
+    }
+    cameras = cam_get_cameras();
+    for (slot = 0; slot < MDKR_MATCH_SLOTS; slot++) {
+        NetworkSlidePresentation *state =
+            &sNetworkSlidePresentation[slot];
+        MdkrLocalListenerMix mix;
+        if (!state->valid || !state->sliding) {
+            racer_sound_stop_network_slide_slot(slot);
+            continue;
+        }
+        if (sNetworkSlideSounds[slot] == NULL) {
+            sound_play_presentation(
+                SOUND_CAR_SLIDE, &sNetworkSlideSounds[slot]);
+        }
+        if (sNetworkSlideSounds[slot] == NULL) {
+            continue;
+        }
+        racer_sound_endpoint_position_mix(
+            state->x, state->y, state->z, slot, state->raceFinished,
+            cameras, roster->canonical_player_count,
+            soundTable[SOUND_CAR_SLIDE].volume, 64, &mix);
+        sndp_set_param(
+            sNetworkSlideSounds[slot], AL_SNDP_VOL_EVT, mix.volume * 256);
+        sndp_set_param(
+            sNetworkSlideSounds[slot], AL_SNDP_PAN_EVT, mix.pan);
+        audspat_calculate_echo(
+            sNetworkSlideSounds[slot], state->x, state->y, state->z);
+    }
+}
+
+void racer_sound_stop_active(Object *obj) {
+    VehicleSoundData *soundData;
+    s32 i;
+
+    if (obj == NULL || obj->racer == NULL) {
+        return;
+    }
+    if (obj->racer->playerIndex >= 0 &&
+        obj->racer->playerIndex < MDKR_MATCH_SLOTS) {
+        sNetworkSlidePresentation[obj->racer->playerIndex].valid = FALSE;
+        racer_sound_stop_network_slide_slot(obj->racer->playerIndex);
+    }
+    soundData = obj->racer->vehicleSound;
+    if (soundData == NULL) {
+        return;
+    }
+    for (i = 0; i < 2; i++) {
+        sndp_stop_and_detach(&soundData->soundHandle[i]);
+    }
+    sndp_stop_and_detach(&soundData->engineIdleSoundHandle);
+    sndp_stop_and_detach(&soundData->brakeSound);
+    sndp_stop_and_detach(&soundData->spinoutSound);
+    sndp_stop_and_detach(&obj->racer->unk10);
+    sndp_stop_and_detach(&obj->racer->unk14);
+    sndp_stop_and_detach(&obj->racer->unk18);
+    sndp_stop_and_detach(&obj->racer->unk1C);
+    sndp_stop_and_detach(&obj->racer->unk20);
+    soundData->spinoutSoundOn = FALSE;
+}
+
+void racer_sound_stop_all_active(void) {
+    Object **racers;
+    s32 racerCount;
+    s32 index;
+
+    racer_sound_stop_network_slides();
+    racers = get_racer_objects(&racerCount);
+    for (index = 0; racers != NULL && index < racerCount; index++) {
+        racer_sound_stop_active(racers[index]);
+    }
+}
+#endif
 
 /**
  * Stops all associated sounds and then frees the vehicle sound data from RAM.

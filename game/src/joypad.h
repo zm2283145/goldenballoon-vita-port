@@ -35,6 +35,9 @@ typedef struct MdkrInputRollbackSpan {
     size_t size;
 } MdkrInputRollbackSpan;
 void input_rollback_capture(MdkrInputSample out[MDKR_INPUT_PORTS]);
+/* Capture the most recently polled hardware state, never canonical input that
+ * rollback subsequently injected into the engine controller buffers. */
+void input_rollback_capture_physical(MdkrInputSample out[MDKR_INPUT_PORTS]);
 void input_rollback_apply(const MdkrInputSample input[MDKR_INPUT_PORTS]);
 /* Pure canonical edge calculation shared by live injection and ROM-free
  * regression tests. Presence transitions are neutral-pad transitions. */

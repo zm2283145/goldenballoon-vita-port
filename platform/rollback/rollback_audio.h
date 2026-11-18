@@ -33,6 +33,22 @@ typedef enum MdkrRollbackAudioMode {
     MDKR_ROLLBACK_AUDIO_SPATIAL
 } MdkrRollbackAudioMode;
 
+typedef enum MdkrRollbackAudioRejectReason {
+    MDKR_ROLLBACK_AUDIO_REJECT_NONE = 0,
+    MDKR_ROLLBACK_AUDIO_REJECT_INVALID,
+    MDKR_ROLLBACK_AUDIO_REJECT_BINDING,
+    MDKR_ROLLBACK_AUDIO_REJECT_CAPACITY
+} MdkrRollbackAudioRejectReason;
+
+enum {
+    MDKR_ROLLBACK_AUDIO_BINDING_SOUND = 1u << 0,
+    MDKR_ROLLBACK_AUDIO_BINDING_MODE = 1u << 1,
+    MDKR_ROLLBACK_AUDIO_BINDING_SLOT = 1u << 2,
+    MDKR_ROLLBACK_AUDIO_BINDING_START = 1u << 3,
+    MDKR_ROLLBACK_AUDIO_BINDING_CANCEL = 1u << 4,
+    MDKR_ROLLBACK_AUDIO_BINDING_CONTEXT = 1u << 5
+};
+
 struct MdkrRollbackAudioRequest {
     MdkrRollbackEventId id;
     uint32_t sound_id;
@@ -80,6 +96,8 @@ typedef struct MdkrRollbackAudioStats {
     uint64_t cancelled;
     uint64_t confirmed;
     uint64_t rejected;
+    uint64_t duplicates;
+    uint64_t rebound;
     uint64_t commands_deferred;
     uint64_t commands_coalesced;
     uint64_t commands_applied;
@@ -91,6 +109,8 @@ typedef struct MdkrRollbackAudioAdapter {
     unsigned count;
     MdkrRollbackAudioCommand commands[MDKR_ROLLBACK_AUDIO_COMMAND_CAPACITY];
     unsigned command_count;
+    MdkrRollbackAudioRejectReason last_rejection;
+    uint32_t last_rejection_detail;
     MdkrRollbackAudioStats stats;
 } MdkrRollbackAudioAdapter;
 

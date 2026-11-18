@@ -142,6 +142,7 @@ void sndp_stop_and_detach(SoundHandle *handlePtr);
 u64 sndp_rollback_generation(SoundHandle handle);
 void sndp_stop_rollback_voice(
     SoundHandle handle, u64 generation, SoundHandle *handlePtr);
+s32 sndp_handle_owned_by(SoundHandle handle, SoundHandle *slot);
 #endif
 ALSoundState *sndp_allocate(UNUSED ALBank *arg0, ALSound *sound);
 void sndp_deallocate(ALSoundState *);

@@ -641,6 +641,158 @@ static s32          s_viFieldsPending  = 0;   /* retrace fields available to dra
  * Carry the rebase to that ticket exactly once. */
 static bool         s_audioRebasePending = false;
 
+#if defined(__vita__)
+#include <psp2/power.h>
+/*
+ * Always-on frame telemetry for the Vita, written to the boot log every five
+ * seconds. "game" is wall time from the scheduler handing control back to game
+ * code until the next pass reaches this boundary: simulation, rollback
+ * resimulation and the real display-list walk. "audio" is the service time on
+ * the synth worker, and "join" is how long the main thread then waited for it.
+ */
+typedef struct VitaFramePerf {
+    uint64_t window_start;
+    uint64_t pass_end;
+    uint64_t last_present;
+    uint64_t game_ns;
+    uint64_t game_max;
+    uint64_t worst_gap;
+    uint64_t walk_ns;
+    uint64_t walk_max;
+    uint32_t walks;
+    uint32_t passes;
+    uint32_t swaps;
+    uint32_t holds;
+    unsigned long long audio_runs;
+    unsigned long long audio_ns;
+    unsigned long long join_ns;
+    uint64_t resim_samples;
+    uint64_t resim_ns;
+} VitaFramePerf;
+static VitaFramePerf s_vitaPerf;
+
+static uint64_t vita_perf_now(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+}
+
+static void vita_perf_pass_begin(void) {
+    const uint64_t now = vita_perf_now();
+    if (s_vitaPerf.pass_end != 0u && now > s_vitaPerf.pass_end) {
+        const uint64_t elapsed = now - s_vitaPerf.pass_end;
+        s_vitaPerf.game_ns += elapsed;
+        if (elapsed > s_vitaPerf.game_max) {
+            s_vitaPerf.game_max = elapsed;
+        }
+    }
+    s_vitaPerf.passes++;
+}
+
+static void vita_perf_note_present(bool swapped) {
+    const uint64_t now = vita_perf_now();
+    if (s_vitaPerf.last_present != 0u &&
+        now - s_vitaPerf.last_present > s_vitaPerf.worst_gap) {
+        s_vitaPerf.worst_gap = now - s_vitaPerf.last_present;
+    }
+    s_vitaPerf.last_present = now;
+    if (swapped) {
+        s_vitaPerf.swaps++;
+    } else {
+        s_vitaPerf.holds++;
+    }
+}
+
+static void vita_perf_note_walk(uint64_t elapsed) {
+    s_vitaPerf.walk_ns += elapsed;
+    if (elapsed > s_vitaPerf.walk_max) {
+        s_vitaPerf.walk_max = elapsed;
+    }
+    s_vitaPerf.walks++;
+}
+
+static void vita_perf_baseline(uint64_t now) {
+    unsigned long long scratch_max = 0;
+    s_vitaPerf.window_start = now;
+    s_vitaPerf.game_ns = s_vitaPerf.game_max = 0u;
+    s_vitaPerf.walk_ns = s_vitaPerf.walk_max = 0u;
+    s_vitaPerf.walks = 0u;
+    s_vitaPerf.worst_gap = 0u;
+    s_vitaPerf.passes = s_vitaPerf.swaps = s_vitaPerf.holds = 0u;
+    dkr_audio_service_perf(&s_vitaPerf.audio_runs, &s_vitaPerf.audio_ns,
+                           &scratch_max);
+    dkr_audio_service_join_perf(&s_vitaPerf.join_ns, &scratch_max);
+    mdkr_rollback_game_runtime_resim_perf(&s_vitaPerf.resim_samples,
+                                          &s_vitaPerf.resim_ns);
+}
+
+static void vita_perf_pass_end(void) {
+    const uint64_t now = vita_perf_now();
+    uint64_t window;
+    s_vitaPerf.pass_end = now;
+    if (s_vitaPerf.window_start == 0u) {
+        vita_perf_baseline(now);
+        return;
+    }
+    window = now - s_vitaPerf.window_start;
+    if (window < 5000000000ull) {
+        return;
+    }
+    {
+        unsigned long long audio_runs = 0, audio_ns = 0, audio_max = 0;
+        unsigned long long join_ns = 0, join_max = 0;
+        uint64_t resim_samples = 0u, resim_ns = 0u;
+        const double secs = (double)window / 1e9;
+        const double passes =
+            s_vitaPerf.passes != 0u ? (double)s_vitaPerf.passes : 1.0;
+        const double walks =
+            s_vitaPerf.walks != 0u ? (double)s_vitaPerf.walks : 1.0;
+        double audio_avg = 0.0;
+        double resim_avg = 0.0;
+        uint64_t resim_count;
+        char line[320];
+        dkr_audio_service_perf(&audio_runs, &audio_ns, &audio_max);
+        dkr_audio_service_join_perf(&join_ns, &join_max);
+        mdkr_rollback_game_runtime_resim_perf(&resim_samples, &resim_ns);
+        if (audio_runs > s_vitaPerf.audio_runs) {
+            audio_avg = (double)(audio_ns - s_vitaPerf.audio_ns) / 1e6 /
+                        (double)(audio_runs - s_vitaPerf.audio_runs);
+        }
+        /* The rollback runtime is rebuilt per level; treat a counter that
+         * went backwards as a fresh start. */
+        if (resim_samples < s_vitaPerf.resim_samples) {
+            s_vitaPerf.resim_samples = 0u;
+            s_vitaPerf.resim_ns = 0u;
+        }
+        resim_count = resim_samples - s_vitaPerf.resim_samples;
+        if (resim_count != 0u && resim_ns >= s_vitaPerf.resim_ns) {
+            resim_avg = (double)(resim_ns - s_vitaPerf.resim_ns) / 1e6 /
+                        (double)resim_count;
+        }
+        snprintf(line, sizeof(line),
+                 "[PERF] fps=%.1f held=%u ticks=%.1f/s game=%.2f/%.2fms "
+                 "walk=%.2f/%.2fms x%u audio=%.2f/%.2fms join=%.2f/%.2fms "
+                 "worst-gap=%.1fms resim=%llu x %.2fms arm=%dMHz",
+                 (double)s_vitaPerf.swaps / secs,
+                 (unsigned)s_vitaPerf.holds,
+                 (double)s_vitaPerf.passes / secs,
+                 (double)s_vitaPerf.game_ns / 1e6 / passes,
+                 (double)s_vitaPerf.game_max / 1e6,
+                 (double)s_vitaPerf.walk_ns / 1e6 / walks,
+                 (double)s_vitaPerf.walk_max / 1e6,
+                 (unsigned)s_vitaPerf.walks,
+                 audio_avg, (double)audio_max / 1e6,
+                 (double)(join_ns - s_vitaPerf.join_ns) / 1e6 / passes,
+                 (double)join_max / 1e6,
+                 (double)s_vitaPerf.worst_gap / 1e6,
+                 (unsigned long long)resim_count, resim_avg,
+                 scePowerGetArmClockFrequency());
+        mdkr_vita_boot_log(line);
+    }
+    vita_perf_baseline(now);
+}
+#endif
+
 static bool test_delayed_endpoint_replay(void) {
     if (s_testDelayedEndpointReplay < 0) {
         const char *value = getenv("MDKR_TEST_DELAYED_ENDPOINT_REPLAY");
@@ -705,9 +857,15 @@ static void sched_dispatch_task(OSMesg msg) {
             goto task_complete;
         }
         mdkr_web_startup_phase("gfx-walk-before");
+#if defined(__vita__)
+        const uint64_t vita_walk_started = vita_perf_now();
+#endif
         gfx_run((void *)t->task.data_ptr);
         mdkr_web_startup_phase("gfx-walk-after");
         gfx_end_frame();
+#if defined(__vita__)
+        vita_perf_note_walk(vita_perf_now() - vita_walk_started);
+#endif
         mdkr_web_startup_phase("gfx-frame-ended");
         /*
          * Zero-delta replay harness (Phase 3 Wave B slice 1). Re-walk the list
@@ -811,6 +969,9 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 platform_oracle_update_fields(
                     (uint64_t)g_simTickCounter, &oracle_update_fields) != 0;
             const uint64_t perf_entry = present_perf_now();
+#if defined(__vita__)
+            vita_perf_pass_begin();
+#endif
             /*
              * THE LIVE-SETTINGS APPLY BOUNDARY (video_config.h).
              *
@@ -959,19 +1120,26 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                 platform_frame_service();
             } else {
                 const uint64_t perf_present = present_perf_now();
-                const bool tick_displayed = !subloop || endpoint_drew;
+                const bool tick_displayed =
+                    dl_fresh && (!subloop || endpoint_drew);
                 if (tick_displayed) {
                     /* Endpoint lead: if this tick's carrying wake ran early,
                      * sleep the remainder so the authored image leaves on
                      * its own display slot rather than tickCompute late. */
                     platform_present_endpoint_gate();
                     platform_frame_sync();                  /* present this frame */
+#if defined(__vita__)
+                    vita_perf_note_present(true);
+#endif
                 } else {
                     /* No graphics task completed for this opportunity. Hold
                      * the last complete image instead of swapping undefined
                      * back-buffer contents. */
                     present_sched_note_stale();
                     platform_frame_sync_no_swap();
+#if defined(__vita__)
+                    vita_perf_note_present(false);
+#endif
                 }
                 present_perf_add(PRESENT_PERF_PRESENT, perf_present);
                 /* The tick's own image is the exact alpha-zero endpoint of the
@@ -1088,6 +1256,11 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                         } else {
                             platform_frame_sync_no_swap();
                         }
+#if defined(__vita__)
+                        if (!elided) {
+                            vita_perf_note_present(drew);
+                        }
+#endif
                         present_perf_add(PRESENT_PERF_IPRESENT, perf_ipresent);
                         /* An elided opportunity serviced the frame without
                          * presenting at all, so it is not a present and must
@@ -1127,7 +1300,13 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
                     : present_sched_tick_fields(),
                 s_audioRebasePending);
             s_audioRebasePending = false;
+#if defined(__vita__)
+            /* Synthesis runs on the worker core and overlaps the next pass's
+             * display-list walk; main_game_loop joins before game logic. */
+            dkr_audio_service_begin();
+#else
             dkr_audio_service_tick();
+#endif
 
             /* THE LAST MOMENT INPUT CAN STILL REACH THIS TICK.
              *
@@ -1179,6 +1358,9 @@ s32 osRecvMesg(OSMesgQueue *mq, OSMesg *msg, s32 flags) {
             s_viFieldsPending = mdkr_pacing_queue_refill(
                 s_viFieldsPending, 1, 8);
             present_perf_add(PRESENT_PERF_TICKWALL, perf_entry);
+#if defined(__vita__)
+            vita_perf_pass_end();
+#endif
         }
         s_viFieldsPending--;
         if (msg) *msg = (OSMesg)(intptr_t)OS_SC_RETRACE_MSG;

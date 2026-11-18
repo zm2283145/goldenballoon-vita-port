@@ -115,10 +115,11 @@ static const MdkrVideoSchema s_schema[MDKR_VIDEO_KEY_COUNT] = {
     },
     [MDKR_CONTENT_PACK_DISABLED] = {
         "Content.PackDisabled", "MDKR_CONTENT_PACK_DISABLED",
-        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_RESTART, 0.0f, 0.0f,
+        MDKR_VIDEO_TYPE_STRING, MDKR_VIDEO_SCOPE_LIVE, 0.0f, 0.0f,
         "Skipped packs",
         "Comma-separated pack names to leave uninstalled. The Content list "
-        "below shows the exact name of every pack it found.",
+        "below shows the exact name of every pack it found. Applied while "
+        "you play; the Vita's TEXTURE PACK option writes this list.",
         MDKR_VIDEO_CAT_FIDELITY
     },
     [MDKR_ENH_SPEEDOMETER] = {

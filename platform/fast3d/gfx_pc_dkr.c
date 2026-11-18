@@ -78,6 +78,7 @@
 #include "display_config.h"
 
 #include "gfx_mipgen.h"
+#include "../mod_texture_preload.h"
 #if defined(__vita__)
 #include <psp2/kernel/processmgr.h>
 #endif
@@ -3489,6 +3490,8 @@ static bool dkr_bind_tile(int unit, uint8_t td, bool cutout, uint32_t *w, uint32
                                     &rice_key)) {
                     const int rice_result = mdkr_mod_texture_lookup_rice_async(
                         rice_key, (int)fmt, (int)siz, &over);
+                    mdkr_mod_texture_preload_note(rice_key, (int)fmt,
+                                                  (int)siz);
                     over_used = rice_result == 1;
                     if (rice_result == 2) {
                         rice_pending = true;

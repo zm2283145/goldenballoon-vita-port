@@ -1493,6 +1493,19 @@ void sound_play(u16 soundID, SoundHandle *handlePtr) {
     sound_play_table_raw(soundID, handlePtr);
 }
 
+#ifdef NATIVE_PORT
+void sound_play_presentation(u16 soundID, SoundHandle *handlePtr) {
+    if (handlePtr == NULL || !mdkr_sound_id_valid(soundID, gSoundCount) ||
+        gSoundTable[soundID].soundBite == 0) {
+        if (handlePtr != NULL) {
+            *handlePtr = NULL;
+        }
+        return;
+    }
+    sound_play_table_raw(soundID, handlePtr);
+}
+#endif
+
 /**
  * Creates a spatial audio reference, then plays a sound.
  * This then makes the audio pan around in 3D space.
