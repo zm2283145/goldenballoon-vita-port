@@ -43,6 +43,7 @@ s32 gCurrentRNGSeed = 7;
 s32 gPrevRNGSeed = 6;
 s32 gObjectCount = 3;
 s32 gObjectListStart = 1;
+s16 gFirstActiveObjectId = 1;
 s32 gParticleCount = 2;
 s32 gCollisionObjectCount = 4;
 s32 gFreeListCount = 5;
@@ -82,6 +83,7 @@ s32 D_801234F8 = 0;
 s32 D_801234FC = 0;
 s8 gLevelSettings[16];
 s32 gRaceStartTimer = 100;
+f32 D_8011D544 = 300.0f;
 Camera gCameras[8];
 s32 gTTCamPlayerID = 0;
 s32 gTTCamID = 0;
@@ -231,6 +233,8 @@ void presentation_snapshot_stage_reset(void) {
     sPresentationResets++;
 }
 
+void audspat_rollback_reconcile_handles(void) {}
+
 void camera_obstruction_runtime_reset(void) {
     sCameraResets++;
 }
@@ -262,10 +266,10 @@ int main(void) {
 
     mdkr_rollback_snapshot_registry_init(&registry, UINT64_C(0x1234));
     assert(mdkr_rollback_game_authority_register(&registry));
-    assert(registry.range_count == 145u);
+    assert(registry.range_count == 147u);
     assert(registry.rebuild_count == 1u);
     assert(!mdkr_rollback_game_authority_register(&registry));
-    assert(registry.range_count == 145u);
+    assert(registry.range_count == 147u);
     assert(mdkr_rollback_game_authority_validate_dynamic_coverage(&registry));
     sObjects[1].anyBehaviorData = sAllocations[24];
     assert(!mdkr_rollback_game_authority_validate_dynamic_coverage(&registry));
@@ -281,6 +285,7 @@ int main(void) {
     gPostRaceViewPort = 1;
     D_801234F8 = 1;
     D_801234FC = 2;
+    D_8011D544 = 0.0f;
     gNumSpriteParticles = 99;
     gWaveController.magnitude = 9.0f;
     gWavePowerDivisor = 0;
@@ -293,11 +298,13 @@ int main(void) {
     sModelPoolBacking[0] = 0u;
     sTransitionState[0] = 0u;
     sInputState[0] = 0u;
+    gFirstActiveObjectId = 9;
     assert(mdkr_rollback_snapshot_restore(
         &registry, 10u, blob, bytes, true));
     assert(gCurrentRNGSeed == 7 && gObjectCount == 3 &&
            gNumSpriteParticles == 3);
     assert(gPostRaceViewPort == 0 && D_801234F8 == 0 && D_801234FC == 0);
+    assert(D_8011D544 == 300.0f);
     assert(gWaveController.magnitude == 1.0f && gWavePowerDivisor == 10);
     assert(gCameras[PLAYER_ONE].zoom == 55u);
     assert(sAllocations[0][0] == 1u && sSettings.courseId == 5);
@@ -307,6 +314,7 @@ int main(void) {
            sModelPoolBacking[0] == 0x5Au);
     assert(sTransitionState[0] == UINT64_C(0x1122334455667788));
     assert(sInputState[0] == UINT64_C(0x8877665544332211));
+    assert(gFirstActiveObjectId == 1);
     assert(sPresentationResets == 1 && sCameraResets == 1);
     free(blob);
 

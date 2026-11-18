@@ -33,6 +33,21 @@ void dkr_audio_out_shutdown(void);
 void dkr_audio_advance_fields(unsigned fields, bool rebase);
 void dkr_audio_service_tick(void);
 void dkr_audio_service_summary(void);
+/* Run one ordered service after a completed game pass. On Vita it executes on
+ * a worker core so synthesis overlaps the next pass's display-list walk;
+ * join() must be reached before any further game code touches audio state.
+ * Elsewhere begin() is inline and join() is a no-op. */
+void dkr_audio_service_begin(void);
+void dkr_audio_service_join(void);
+/* Cumulative service count and wall time (nanoseconds), for frame telemetry.
+ * ns_max is the longest single service since the previous call. Services still
+ * running on the worker are counted once joined. */
+void dkr_audio_service_perf(unsigned long long *runs,
+                            unsigned long long *ns_total,
+                            unsigned long long *ns_max);
+/* Cumulative main-thread wait inside join() and its max since the last call. */
+void dkr_audio_service_join_perf(unsigned long long *ns_total,
+                                 unsigned long long *ns_max);
 
 /*
  * TEST-ONLY main-loop hitch injector, called at the tick boundary immediately

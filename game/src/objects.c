@@ -91,6 +91,13 @@
 #include "vehicle_misc.h"
 #include "video.h"
 #include "waves.h"
+
+#ifdef NATIVE_PORT
+#define RACE_TRANSITION_READY(requested) \
+    mdkr_rollback_game_runtime_transition_ready(requested)
+#else
+#define RACE_TRANSITION_READY(requested) (requested)
+#endif
 #include "weather.h"
 
 /* Wizpig and Terry presentation actors reuse retail racer object headers so their animated boss
@@ -4364,7 +4371,14 @@ void track_setup_racers(Vehicle vehicle, u32 entranceID, s32 playerCount) {
             i = racerObj->header->flags;
             if (i & OBJECT_HEADER_NO_TIME_TRIAL && gIsTimeTrial) {
                 free_object(racerObj);
-            } else if (i & OBJECT_HEADER_NO_MULTIPLATER && numPlayers >= 2) {
+            } else if (i & OBJECT_HEADER_NO_MULTIPLATER && numPlayers >= 2
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+                       /* LAN renders one viewport per Vita, so retain the
+                        * deterministic ambient actor removed for split-screen. */
+                       && !(mdkr_net_roster_runtime_active() &&
+                            racerObj->behaviorId == BHV_DINO_WHALE)
+#endif
+            ) {
                 free_object(racerObj);
             }
         }
@@ -6374,7 +6388,7 @@ void free_object(Object *object) {
      * tracks particles independently for interpolation safety. */
     if (!(object->trans.flags & OBJ_FLAGS_PARTICLE)) {
         GAMEPLAY_EVENT_TRACE(
-            GAMEPLAY_EVENT_DESPAWN, object->objectID, object->headerType,
+            GAMEPLAY_EVENT_DESPAWN, object->objectID, object->behaviorId,
             FALSE, gFreeListCount);
     }
 #endif
@@ -6539,7 +6553,13 @@ void obj_destroy(Object *obj, s32 arg1) {
                 audspat_point_stop(weapon->soundMask);
                 weapon->soundMask = NULL;
                 if (obj->behaviorId == BHV_WEAPON_2) {
+#ifdef NATIVE_PORT
+                    if (!mdkr_rollback_game_runtime_active() ||
+                        mdkr_rollback_game_runtime_presentation_allowed())
+#endif
+                    {
                     decrease_rocket_sound_timer();
+                    }
                 }
             }
 
@@ -12269,10 +12289,13 @@ void race_check_finish(s32 updateRate) {
                         }
                     }
                 }
-                if ((currentLevelHeader->race_type != RACETYPE_CHALLENGE_BATTLE && numFinishedRacers > 0) ||
-                    ((((numHumanRacers == 1 && numHumanRacersFinished == 1) ||
-                       (numHumanRacers >= 2 && numHumanRacersFinished >= numHumanRacers)) ||
-                      numFinishedRacers >= 3))) {
+                if (RACE_TRANSITION_READY(
+                        (currentLevelHeader->race_type != RACETYPE_CHALLENGE_BATTLE &&
+                         numFinishedRacers > 0) ||
+                        (((numHumanRacers == 1 && numHumanRacersFinished == 1) ||
+                          (numHumanRacers >= 2 &&
+                           numHumanRacersFinished >= numHumanRacers)) ||
+                         numFinishedRacers >= 3))) {
                     for (i = 0; i < gNumRacers; i++) {
                         if (currentLevelHeader->race_type == RACETYPE_CHALLENGE_BATTLE) {
                             sp5C[i] = 10 - racer[i]->bananas;
@@ -12667,9 +12690,16 @@ void race_check_finish(s32 updateRate) {
             set_course_finish_flags(settings) != 0) {
             someBool2 = TRUE;
         }
-        if ((numHumanRacersFinished == numHumanRacers ||
-             (numHumanRacers >= 2 && numFinishedRacers >= (gNumRacers - 1))) ||
-            someBool2) {
+        if (RACE_TRANSITION_READY(
+                (numHumanRacersFinished == numHumanRacers ||
+                 (numHumanRacers >= 2 &&
+                  numFinishedRacers >= (gNumRacers - 1))) ||
+                someBool2
+#ifdef NATIVE_PORT
+                || (mdkr_rollback_game_runtime_network_active() &&
+                    numHumanRacersFinished > 0)
+#endif
+                )) {
             if (numHumanRacersFinished != numHumanRacers) {
                 i = 0;
                 do {

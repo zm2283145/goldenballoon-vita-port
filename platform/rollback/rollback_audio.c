@@ -20,12 +20,29 @@ static MdkrRollbackAudioEntry *find_entry(
     return NULL;
 }
 
-static bool same_binding(
+static uint32_t binding_difference(
     const MdkrRollbackAudioRequest *left,
     const MdkrRollbackAudioRequest *right) {
-    return left->sound_id == right->sound_id && left->mode == right->mode &&
-        left->handle_slot == right->handle_slot && left->start == right->start &&
-        left->cancel == right->cancel && left->context == right->context;
+    uint32_t difference = 0u;
+    if (left->sound_id != right->sound_id) {
+        difference |= MDKR_ROLLBACK_AUDIO_BINDING_SOUND;
+    }
+    if (left->mode != right->mode) {
+        difference |= MDKR_ROLLBACK_AUDIO_BINDING_MODE;
+    }
+    if (left->handle_slot != right->handle_slot) {
+        difference |= MDKR_ROLLBACK_AUDIO_BINDING_SLOT;
+    }
+    if (left->start != right->start) {
+        difference |= MDKR_ROLLBACK_AUDIO_BINDING_START;
+    }
+    if (left->cancel != right->cancel) {
+        difference |= MDKR_ROLLBACK_AUDIO_BINDING_CANCEL;
+    }
+    if (left->context != right->context) {
+        difference |= MDKR_ROLLBACK_AUDIO_BINDING_CONTEXT;
+    }
+    return difference;
 }
 
 static void start_entry(
@@ -54,15 +71,40 @@ bool mdkr_rollback_audio_request(
     MdkrRollbackAudioAdapter *adapter,
     const MdkrRollbackAudioRequest *request, bool resimulating) {
     MdkrRollbackAudioEntry *entry;
+    if (adapter != NULL) {
+        adapter->last_rejection = MDKR_ROLLBACK_AUDIO_REJECT_NONE;
+        adapter->last_rejection_detail = 0u;
+    }
     if (adapter == NULL || request == NULL || request->id.kind == 0u ||
         request->start == NULL || request->cancel == NULL ||
         request->mode > MDKR_ROLLBACK_AUDIO_SPATIAL) {
-        if (adapter != NULL) adapter->stats.rejected++;
+        if (adapter != NULL) {
+            adapter->last_rejection = MDKR_ROLLBACK_AUDIO_REJECT_INVALID;
+            adapter->stats.rejected++;
+        }
         return false;
     }
     entry = find_entry(adapter, request->id, NULL);
     if (entry != NULL) {
-        if (!same_binding(&entry->request, request)) {
+        const uint32_t difference =
+            binding_difference(&entry->request, request);
+        if (difference == MDKR_ROLLBACK_AUDIO_BINDING_SLOT) {
+            /* Same sound, tick and ordinal from a different emitter slot: a
+             * correction changed which object reached this ordinal first
+             * (e.g. two racers firing the same sound in one tick). That is a
+             * legal timeline change, not corruption. Rebind so a later cancel
+             * clears the slot that now owns the effect; the voice keeps
+             * playing, exactly as an idempotent duplicate would. */
+            entry->request.handle_slot = request->handle_slot;
+            entry->request.x = request->x;
+            entry->request.y = request->y;
+            entry->request.z = request->z;
+            adapter->stats.rebound++;
+            return true;
+        }
+        if (difference != 0u) {
+            adapter->last_rejection = MDKR_ROLLBACK_AUDIO_REJECT_BINDING;
+            adapter->last_rejection_detail = difference;
             adapter->stats.rejected++;
             return false;
         }
@@ -72,14 +114,20 @@ bool mdkr_rollback_audio_request(
         entry->request.x = request->x;
         entry->request.y = request->y;
         entry->request.z = request->z;
+        /* The event journal has already accepted this exact id/value as an
+         * idempotent duplicate. Keep the audio adapter's verdict aligned:
+         * resimulation controls accounting/deferred playback, not whether the
+         * same bound effect is legal. */
         if (resimulating) {
             adapter->stats.suppressed++;
-            return true;
+        } else {
+            adapter->stats.duplicates++;
         }
-        adapter->stats.rejected++;
-        return false;
+        return true;
     }
     if (adapter->count >= MDKR_ROLLBACK_AUDIO_CAPACITY) {
+        adapter->last_rejection = MDKR_ROLLBACK_AUDIO_REJECT_CAPACITY;
+        adapter->last_rejection_detail = adapter->count;
         adapter->stats.rejected++;
         return false;
     }

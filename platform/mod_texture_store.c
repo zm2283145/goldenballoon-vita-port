@@ -769,7 +769,7 @@ static void slot_resolve_rice(StoreSlot *slot, uint32_t crc, int fmt, int siz) {
 /* ------------------------------------------------- Vita decode helper ---- */
 
 #if defined(__vita__)
-#define ASYNC_RING_MAX 512u
+#define ASYNC_RING_MAX 1024u
 /* Finished-but-not-yet-collected pixels the helper may hold before it waits
  * for the render thread to catch up. */
 #define ASYNC_DONE_BYTES_MAX ((size_t)48u * 1024u * 1024u)
@@ -784,11 +784,17 @@ static const int k_async_worker_cpu[ASYNC_WORKER_COUNT] = {
     0x00040000  /* user core 2 */
 };
 
+
 typedef struct AsyncJob {
     char        key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
     const char *all, *rgb, *alpha;   /* registry-owned; see shutdown */
     uint32_t    gen;
 } AsyncJob;
+
+/* Preload queues a whole scene at once. A texture the renderer is asking for
+ * right now goes to the FRONT of the queue instead of behind all of it. */
+#define ASYNC_PUSH_BACK  0
+#define ASYNC_PUSH_FRONT 1
 
 typedef struct AsyncDone {
     char     key[MDKR_MOD_TEXTURE_DIGEST_CHARS];
@@ -1012,16 +1018,33 @@ static void worker_decode(const AsyncJob *job, AsyncDone *done) {
                                                     &mip_bytes, done->reason,
                                                     sizeof done->reason);
         if (container != NULL) {
-            done->owned = container;
-            done->rgba = container + VTEX_HEADER_BYTES;
-            done->width = w;
-            done->height = h;
-            done->mips = mip_bytes > 0
-                ? container + VTEX_HEADER_BYTES +
-                      (size_t)w * (size_t)h * 4u
-                : NULL;
-            done->mip_bytes = mip_bytes;
-            done->mips_borrowed = 1;
+            /* Copy out into ordinary allocations rather than handing the
+             * store interior pointers into one buffer: every release path
+             * here (eviction, shutdown, post-upload release, a rejected
+             * completion) then frees exactly what it allocated. An interior
+             * pointer reaching free() corrupts the heap, and newlib only
+             * notices later, inside an unrelated free. */
+            const size_t base = (size_t)w * (size_t)h * 4u;
+            uint8_t *pixels = (uint8_t *)malloc(base);
+            uint8_t *chain = mip_bytes > 0 ? (uint8_t *)malloc(mip_bytes) : NULL;
+            if (pixels != NULL && (mip_bytes == 0 || chain != NULL)) {
+                memcpy(pixels, container + VTEX_HEADER_BYTES, base);
+                if (chain != NULL) {
+                    memcpy(chain, container + VTEX_HEADER_BYTES + base,
+                           mip_bytes);
+                }
+                done->rgba = pixels;
+                done->width = w;
+                done->height = h;
+                done->mips = chain;
+                done->mip_bytes = chain != NULL ? mip_bytes : 0;
+            } else {
+                free(pixels);
+                free(chain);
+                set_reason(done->reason, sizeof done->reason,
+                           "there was not enough memory to hold it");
+            }
+            free(container);
         }
         return;
     }
@@ -1228,6 +1251,10 @@ static void async_pump(void) {
         slot->height = done->height;
         slot->bytes = bytes;
         slot->state = SLOT_RESIDENT;
+        /* Without this a freshly decoded texture carries last_use 0 and is the
+         * first thing the next eviction drops - which, while a preload is
+         * running, means the cache evicts exactly what it just decoded. */
+        slot->last_use = ++s_use_clock;
         s_resident_bytes += bytes;
         mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_DECODED_BYTES,
                                        (uint64_t)bytes);
@@ -1275,6 +1302,9 @@ void mdkr_mod_texture_store_init(const MdkrModRegistry *registry) {
 
     mdkr_mod_texture_store_shutdown();
 
+    /* A new binding can resolve the same identity to different pixels (a
+     * different pack was selected), so GPU uploads from the old one retire. */
+    s_generation++;
     s_registry = registry;
     s_enabled_packs = 0;
     count = mdkr_mod_registry_count(registry);
@@ -1474,6 +1504,7 @@ int mdkr_mod_texture_lookup_rice_async(uint32_t crc, int fmt, int siz,
     if (slot == NULL) return 0;
     switch (slot->state) {
     case SLOT_RESIDENT:
+        if (out == NULL) return 1;   /* prefetch: already here, nothing to do */
         mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESIDENT_HITS, 1u);
         slot->last_use = ++s_use_clock;
         if (out != NULL) {
@@ -1501,13 +1532,20 @@ int mdkr_mod_texture_lookup_rice_async(uint32_t crc, int fmt, int siz,
         return 0;
     }
     if (found->all == NULL && found->rgb == NULL) {
+        if (out == NULL) return 0;
         /* Let the blocking resolver apply its existing rejection wording. */
         return mdkr_mod_texture_lookup_rice(crc, fmt, siz, out);
     }
     mdkr_vita_profiler_counter_add(MDKR_VP_COUNTER_MOD_RESOLVES, 1u);
     async_lock();
     if (s_job_count < ASYNC_RING_MAX) {
-        AsyncJob *job = &s_jobs[(s_job_head + s_job_count) % ASYNC_RING_MAX];
+        AsyncJob *job;
+        if (out != NULL) {   /* the renderer wants this one now */
+            s_job_head = (s_job_head + ASYNC_RING_MAX - 1u) % ASYNC_RING_MAX;
+            job = &s_jobs[s_job_head];
+        } else {
+            job = &s_jobs[(s_job_head + s_job_count) % ASYNC_RING_MAX];
+        }
         memcpy(job->key, key, sizeof job->key);
         job->all = found->all;
         job->rgb = found->rgb;
@@ -1523,6 +1561,36 @@ int mdkr_mod_texture_lookup_rice_async(uint32_t crc, int fmt, int siz,
     return 2;
 #else
     return mdkr_mod_texture_lookup_rice(crc, fmt, siz, out);
+#endif
+}
+
+int mdkr_mod_texture_prefetch_rice(uint32_t crc, int fmt, int siz) {
+#if defined(__vita__)
+    return mdkr_mod_texture_lookup_rice_async(crc, fmt, siz, NULL) != 0;
+#else
+    (void)crc; (void)fmt; (void)siz;
+    return 0;
+#endif
+}
+
+size_t mdkr_mod_texture_resident_bytes(void) { return s_resident_bytes; }
+
+size_t mdkr_mod_texture_cache_bytes_max(void) {
+    return (size_t)MDKR_MOD_TEXTURE_CACHE_BYTES_MAX;
+}
+
+int mdkr_mod_texture_pending_count(void) {
+#if defined(__vita__)
+    size_t index;
+    int    pending = 0;
+    if (s_async_state <= 0 || s_slots == NULL) return 0;
+    async_pump();
+    for (index = 0; index < s_slot_capacity; index++) {
+        if (s_slots[index].state == SLOT_PENDING) pending++;
+    }
+    return pending;
+#else
+    return 0;
 #endif
 }
 

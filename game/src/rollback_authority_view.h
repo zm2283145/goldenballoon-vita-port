@@ -5,6 +5,7 @@
 
 #ifdef NATIVE_PORT
 #include <stddef.h>
+#include <stdint.h>
 
 /* Stable main-pool allocations whose contents participate in object/race
  * simulation. Pointer values are in-process references, never serialized. */
@@ -49,6 +50,15 @@ s32 mdkr_object_rollback_identify_address(
     MdkrObjectRollbackAddressInfo *info);
 s32 mdkr_object_rollback_describe_object(
     const void *object_pointer, MdkrObjectRollbackAddressInfo *info);
+/* Pointer-free digest of gameplay-relevant racer state. Physical audio and
+ * render handles are deliberately excluded so peers can compare the value. */
+uint64_t mdkr_object_rollback_semantic_digest(void);
+/* Peer-drift diagnostics: pointer-free, comparable across devices, never fed
+ * back into simulation. */
+uint32_t mdkr_object_rollback_racer_digest(s32 index);
+uint32_t mdkr_object_rollback_world_digest(void);
+uint32_t mdkr_object_rollback_object_count(void);
+uint32_t mdkr_object_rollback_racer_count(void);
 #endif
 
 #endif

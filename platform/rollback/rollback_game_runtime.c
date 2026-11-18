@@ -10,11 +10,15 @@
 #include "port_env.h"
 #include "PR/os_cont.h"
 #include "asset_enums.h"
+#ifdef NATIVE_PORT
+#include "audio_vehicle.h"
+#endif
 #include "common.h"
 #include "fade_transition.h"
 #include "game.h"
 #include "gameplay_event_trace.h"
 #include "joypad.h"
+#include "math_util.h"
 #include "memory.h"
 #include "net/net_input.h"
 #include "net/match_input_runtime.h"
@@ -30,6 +34,25 @@
 #include "rollback_events.h"
 #include "rollback_ring.h"
 #include "thread3_main.h"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+#include "vita_lan.h"
+#endif
+
+/* Vita stderr is not captured: mirror correction-window degradations (which
+ * leave the un-replayed prefix permanently diverged) into the boot log. */
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+extern void mdkr_vita_boot_log(const char *message);
+#define ROLLBACK_LAN_LOG(...)                       \
+    do {                                            \
+        char rollbackLanLine_[128];                 \
+        snprintf(rollbackLanLine_,                  \
+                 sizeof(rollbackLanLine_),          \
+                 __VA_ARGS__);                      \
+        mdkr_vita_boot_log(rollbackLanLine_);       \
+    } while (0)
+#else
+#define ROLLBACK_LAN_LOG(...) do { } while (0)
+#endif
 
 #define MDKR_ROLLBACK_LAB_SLOTS MDKR_ROLLBACK_SNAPSHOT_SLOTS
 #define MDKR_ROLLBACK_LAB_MANIFEST UINT64_C(0x52424c4142563031)
@@ -73,7 +96,14 @@ typedef struct MdkrRollbackGameRuntime {
     uint32_t replay_target_tick;
     uint32_t range_hash_tick;
     uint32_t prepared_tick;
+    uint32_t pending_transition_tick;
     uint32_t effect_tick;
+    uint32_t state_digest_log_count;
+    uint32_t correction_digest_log_count;
+    uint32_t item_digest_log_count;
+    MdkrRollbackTickDigest digests[MDKR_ROLLBACK_DIGEST_SLOTS];
+    char failure_reason[80];
+    char side_effect_failure[64];
     uint16_t effect_ordinals[GAMEPLAY_EVENT_KIND_COUNT];
     MdkrRollbackEventId pending_sound_id;
     int item_probe_weapon;
@@ -115,10 +145,83 @@ typedef struct MdkrRollbackGameRuntime {
     bool side_effect_error;
     bool pending_sound;
     bool authored_frame_timing_active;
+    bool pending_transition_confirmed;
+    bool resimulating;
     bool active;
 } MdkrRollbackGameRuntime;
 
 static MdkrRollbackGameRuntime sRollbackGameRuntime;
+
+_Static_assert(MDKR_ROLLBACK_DIGEST_FINAL_AGE >= MDKR_ROLLBACK_LAB_SLOTS,
+               "digest finality must outlive the rewind window");
+_Static_assert(MDKR_ROLLBACK_DIGEST_SLOTS >
+                   MDKR_ROLLBACK_DIGEST_FINAL_AGE + 8u,
+               "digest ring must retain final ticks for the peer exchange");
+
+extern s32 gCurrentRNGSeed;
+
+/* Peer-drift witness: called after every authoritative boundary capture, both
+ * on normal advance and for each corrected tick a reconcile replays, so a
+ * tick's slot always holds its latest (post-correction) state. */
+static void record_tick_digest(MdkrRollbackGameRuntime *runtime,
+                               uint32_t tick,
+                               const MdkrRollbackInputHistory *history) {
+    MdkrRollbackTickDigest *digest =
+        &runtime->digests[tick % MDKR_ROLLBACK_DIGEST_SLOTS];
+    uint32_t input_hash = UINT32_C(2166136261);
+    unsigned port;
+    unsigned i;
+    for (port = 0u; port < MDKR_INPUT_PORTS; port++) {
+        const MdkrInputSample *sample = &history->input[port];
+        const uint32_t word =
+            (uint32_t)sample->buttons |
+            ((uint32_t)(uint8_t)sample->stick_x << 16) |
+            ((uint32_t)(uint8_t)sample->stick_y << 24);
+        input_hash = (input_hash ^ word) * UINT32_C(16777619);
+        input_hash = (input_hash ^ (sample->present ? 1u : 0u)) *
+                     UINT32_C(16777619);
+    }
+    input_hash = (input_hash ^ (uint32_t)history->update_rate) *
+                 UINT32_C(16777619);
+    memset(digest, 0, sizeof(*digest));
+    digest->tick = tick;
+    digest->semantic = mdkr_object_rollback_semantic_digest();
+    digest->rng_seed = (uint32_t)gCurrentRNGSeed;
+    digest->rng_draws = (uint32_t)mdkr_authoritative_rng_draws();
+    digest->input = input_hash;
+    digest->world = mdkr_object_rollback_world_digest();
+    digest->object_count = (uint16_t)mdkr_object_rollback_object_count();
+    digest->racer_count = (uint8_t)mdkr_object_rollback_racer_count();
+    digest->confirmed_mask = history->confirmed_mask;
+    for (i = 0u; i < MDKR_ROLLBACK_DIGEST_RACERS; i++) {
+        digest->racer[i] = mdkr_object_rollback_racer_digest((s32)i);
+    }
+}
+
+bool mdkr_rollback_game_runtime_final_digest(uint32_t tick,
+                                             MdkrRollbackTickDigest *out) {
+    const MdkrRollbackGameRuntime *runtime = &sRollbackGameRuntime;
+    const uint64_t current = runtime->validated_boundaries;
+    const MdkrRollbackTickDigest *digest;
+    if (!runtime->active || !runtime->network_input || out == NULL ||
+        tick == 0u ||
+        current < (uint64_t)tick + MDKR_ROLLBACK_DIGEST_FINAL_AGE ||
+        current - tick >= MDKR_ROLLBACK_DIGEST_SLOTS) {
+        return false;
+    }
+    digest = &runtime->digests[tick % MDKR_ROLLBACK_DIGEST_SLOTS];
+    if (digest->tick != tick) {
+        return false;
+    }
+    *out = *digest;
+    return true;
+}
+
+uint32_t mdkr_rollback_game_runtime_validated_tick(void) {
+    return sRollbackGameRuntime.active
+               ? (uint32_t)sRollbackGameRuntime.validated_boundaries
+               : 0u;
+}
 
 static Object_Racer *item_probe_racer(void) {
     Object *object = get_racer_object_by_port(PLAYER_ONE);
@@ -334,13 +437,53 @@ static void preview_rollback_effect(
     }
 }
 
+static void reject_side_effect(
+    MdkrRollbackGameRuntime *runtime, const char *source,
+    uint32_t tick, uint32_t kind, uint32_t value) {
+    if (runtime == NULL || runtime->side_effect_error) {
+        return;
+    }
+    runtime->side_effect_error = true;
+    snprintf(runtime->side_effect_failure,
+             sizeof(runtime->side_effect_failure),
+             "%.20s t=%u k=%u v=%u", source, tick, kind, value);
+}
+
+static const char *audio_request_failure_source(
+    const MdkrRollbackAudioAdapter *audio) {
+    switch (audio->last_rejection) {
+        case MDKR_ROLLBACK_AUDIO_REJECT_INVALID:
+            return "AUDIO_REQ_INVALID";
+        case MDKR_ROLLBACK_AUDIO_REJECT_BINDING:
+            if (audio->last_rejection_detail ==
+                MDKR_ROLLBACK_AUDIO_BINDING_SLOT) {
+                return "AUDIO_REQ_SLOT";
+            }
+            return "AUDIO_REQ_BINDING";
+        case MDKR_ROLLBACK_AUDIO_REJECT_CAPACITY:
+            return "AUDIO_REQ_CAPACITY";
+        default:
+            return "AUDIO_REQUEST";
+    }
+}
+
+static uint32_t audio_request_failure_detail(
+    const MdkrRollbackAudioAdapter *audio, uint16_t ordinal) {
+    return audio->last_rejection == MDKR_ROLLBACK_AUDIO_REJECT_BINDING ||
+            audio->last_rejection == MDKR_ROLLBACK_AUDIO_REJECT_CAPACITY
+        ? audio->last_rejection_detail
+        : ordinal;
+}
+
 static void cancel_rollback_effect(
     const MdkrRollbackEvent *event, void *context) {
     MdkrRollbackGameRuntime *runtime = (MdkrRollbackGameRuntime *)context;
     if (event == NULL) return;
     if (event->id.kind == GAMEPLAY_EVENT_SOUND && runtime != NULL &&
         !mdkr_rollback_audio_cancel(&runtime->audio, event->id)) {
-        runtime->side_effect_error = true;
+        reject_side_effect(
+            runtime, "AUDIO_CANCEL", event->id.tick, event->id.kind,
+            event->id.ordinal);
     } else if (event->id.kind == GAMEPLAY_EVENT_RUMBLE) {
         mdkr_rollback_rumble_cancel_preview(event->value & UINT32_C(0xff));
     }
@@ -372,6 +515,25 @@ static void observe_rollback_effect(
         } else {
             runtime->observed_item_despawns++;
         }
+        if (runtime->network_input &&
+            runtime->item_digest_log_count < 32u) {
+            const uint32_t event_tick =
+                runtime->effect_tick != 0u
+                    ? runtime->effect_tick
+                    : (runtime->validated_boundaries < UINT32_MAX
+                           ? (uint32_t)(runtime->validated_boundaries + 1u)
+                           : UINT32_MAX);
+            fprintf(stderr,
+                    "[ROLLBACK-ITEM] tick=%u event=%s object=%d behavior=%d "
+                    "aux=%d/%d replay=%u state=%016" PRIx64
+                    " rng-draws=%" PRIu64 "\n",
+                    event_tick,
+                    kind == GAMEPLAY_EVENT_SPAWN ? "spawn" : "despawn",
+                    a, b, c, d, runtime->resimulating ? 1u : 0u,
+                    mdkr_object_rollback_semantic_digest(),
+                    mdkr_authoritative_rng_draws());
+            runtime->item_digest_log_count++;
+        }
     }
     if (
         (kind != GAMEPLAY_EVENT_SOUND && kind != GAMEPLAY_EVENT_RUMBLE &&
@@ -386,7 +548,9 @@ static void observe_rollback_effect(
     }
     ordinal = &runtime->effect_ordinals[kind];
     if (*ordinal == UINT16_MAX) {
-        runtime->side_effect_error = true;
+        reject_side_effect(
+            runtime, "ORDINAL_OVERFLOW", runtime->effect_tick,
+            (uint32_t)kind, *ordinal);
         return;
     }
     id.tick = runtime->effect_tick;
@@ -402,7 +566,8 @@ static void observe_rollback_effect(
     if (!mdkr_rollback_events_emit(
             &runtime->events, id, policy,
             effect_adapter_value(kind, a, b, c, d))) {
-        runtime->side_effect_error = true;
+        reject_side_effect(
+            runtime, "JOURNAL_EMIT", id.tick, id.kind, id.ordinal);
     } else if (kind == GAMEPLAY_EVENT_SOUND) {
         runtime->pending_sound_id = id;
         runtime->pending_sound = true;
@@ -414,6 +579,17 @@ static const GameplayEventObserver kRollbackEffectObserver = {
 
 bool mdkr_rollback_game_runtime_active(void) {
     return sRollbackGameRuntime.active;
+}
+
+bool mdkr_rollback_game_runtime_network_active(void) {
+    return sRollbackGameRuntime.active &&
+        sRollbackGameRuntime.network_input;
+}
+
+const char *mdkr_rollback_game_runtime_failure_reason(void) {
+    return sRollbackGameRuntime.failure_reason[0] != '\0'
+        ? sRollbackGameRuntime.failure_reason
+        : "ROLLBACK UNSPECIFIED";
 }
 
 bool mdkr_rollback_game_runtime_requested(void) {
@@ -437,12 +613,30 @@ bool mdkr_rollback_game_runtime_presentation_allowed(void) {
         !sRollbackGameRuntime.events.resimulating;
 }
 
+uint8_t mdkr_rollback_game_runtime_prepared_confirmed_mask(void) {
+    const MdkrRollbackGameRuntime *runtime = &sRollbackGameRuntime;
+    const MdkrRollbackInputHistory *history;
+    if (!runtime->active || !runtime->network_input ||
+        !runtime->tick_prepared) {
+        return 0u;
+    }
+    history = &runtime->input_history[
+        runtime->prepared_tick % MDKR_ROLLBACK_LAB_SLOTS];
+    if (!history->valid || history->tick != runtime->prepared_tick) {
+        return 0u;
+    }
+    return history->confirmed_mask;
+}
+
 bool mdkr_rollback_game_runtime_defer_audio_command(
     const MdkrRollbackAudioCommand *command) {
     MdkrRollbackGameRuntime *runtime = &sRollbackGameRuntime;
     if (!runtime->active || !runtime->events.resimulating) return false;
     if (!mdkr_rollback_audio_defer_command(&runtime->audio, command)) {
-        runtime->side_effect_error = true;
+        reject_side_effect(
+            runtime, "AUDIO_COMMAND", runtime->effect_tick,
+            command != NULL ? command->operation : 0u,
+            runtime->audio.command_count);
     }
     return true;
 }
@@ -453,7 +647,10 @@ bool mdkr_rollback_game_runtime_sound_request(
     MdkrRollbackGameRuntime *runtime = &sRollbackGameRuntime;
     if (!runtime->active) return false;
     if (request == NULL || !runtime->pending_sound) {
-        runtime->side_effect_error = true;
+        reject_side_effect(
+            runtime, "SOUND_PAIR", runtime->effect_tick,
+            request != NULL ? request->sound_id : 0u,
+            runtime->pending_sound ? 1u : 0u);
         return true;
     }
     bound = *request;
@@ -461,7 +658,13 @@ bool mdkr_rollback_game_runtime_sound_request(
     runtime->pending_sound = false;
     if (!mdkr_rollback_audio_request(
             &runtime->audio, &bound, runtime->events.resimulating)) {
-        runtime->side_effect_error = true;
+        reject_side_effect(
+            runtime,
+            audio_request_failure_source(&runtime->audio),
+            bound.id.tick,
+            bound.sound_id,
+            audio_request_failure_detail(
+                &runtime->audio, bound.id.ordinal));
     }
     return true;
 }
@@ -498,12 +701,83 @@ static bool resimulate_timed(
     MdkrRollbackGameRuntime *runtime, int update_rate,
     const MdkrInputSample input[MDKR_INPUT_PORTS]) {
     const uint64_t started = rollback_clock_now(NULL);
-    const bool result = mdkr_game_resimulate_tick(update_rate, input);
-    const uint64_t finished = rollback_clock_now(NULL);
+    uint64_t finished;
+    bool result;
+    runtime->resimulating = true;
+    result = mdkr_game_resimulate_tick(update_rate, input);
+    runtime->resimulating = false;
+    finished = rollback_clock_now(NULL);
     mdkr_rollback_timing_record(
         &runtime->resimulation_timing,
         finished >= started ? finished - started : 0u);
     return result;
+}
+
+void mdkr_rollback_game_runtime_resim_perf(uint64_t *samples,
+                                           uint64_t *ns_total) {
+    if (samples != NULL) {
+        *samples = sRollbackGameRuntime.resimulation_timing.samples;
+    }
+    if (ns_total != NULL) {
+        *ns_total = sRollbackGameRuntime.resimulation_timing.ns_total;
+    }
+}
+
+bool mdkr_rollback_game_runtime_transition_ready(bool requested) {
+    MdkrRollbackGameRuntime *runtime = &sRollbackGameRuntime;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    uint32_t authoritative_tick = 0u;
+#endif
+
+    if (!runtime->active || !runtime->network_input) {
+        return requested;
+    }
+    if (runtime->resimulating) {
+        return false;
+    }
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        authoritative_tick = mdkr_vita_lan_finish_target_tick();
+        if (authoritative_tick != 0u) {
+            requested = true;
+        }
+    }
+#endif
+    if (!requested) {
+        runtime->pending_transition_tick = 0u;
+        runtime->pending_transition_confirmed = false;
+        return false;
+    }
+    if (runtime->pending_transition_tick == 0u
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+        || (authoritative_tick != 0u &&
+            runtime->pending_transition_tick != authoritative_tick)
+#endif
+    ) {
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+        if (authoritative_tick != 0u) {
+            runtime->pending_transition_tick = authoritative_tick;
+            runtime->pending_transition_confirmed = false;
+        } else
+#endif
+        {
+            if (!runtime->tick_prepared) {
+                return false;
+            }
+            runtime->pending_transition_tick = runtime->prepared_tick;
+            runtime->pending_transition_confirmed = false;
+        }
+    }
+    if (!runtime->pending_transition_confirmed) {
+        return false;
+    }
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        return mdkr_vita_lan_finish_barrier_ready(
+            runtime->pending_transition_tick);
+    }
+#endif
+    return true;
 }
 
 static void log_pool_mutation(
@@ -826,7 +1100,12 @@ bool mdkr_rollback_game_runtime_level_ready(void) {
     sRollbackGameRuntime.mutation_control = mutation_control;
     sRollbackGameRuntime.delayed_input_control = delayed_input_control;
     sRollbackGameRuntime.network_input = network_input;
-    input_rollback_capture(sRollbackGameRuntime.last_applied_input);
+    if (network_input) {
+        memset(sRollbackGameRuntime.last_applied_input, 0,
+               sizeof(sRollbackGameRuntime.last_applied_input));
+    } else {
+        input_rollback_capture(sRollbackGameRuntime.last_applied_input);
+    }
     mdkr_net_input_init(&sRollbackGameRuntime.net_inputs, 1u);
     mdkr_rollback_events_init(
         &sRollbackGameRuntime.events, true, preview_rollback_effect, NULL,
@@ -858,6 +1137,8 @@ static bool reconcile_network_inputs(
     MdkrRollbackGameRuntime *runtime, uint32_t last_tick) {
     uint32_t dirty;
     uint32_t tick;
+    uint64_t predicted_digest;
+    uint64_t predicted_rng_draws;
     if (!mdkr_match_input_runtime_take_dirty(&dirty)) return true;
     /* A correction target that is zero or ahead of the committed frontier is
      * nonsensical (a healthy transport never emits one). Skip it rather than
@@ -869,6 +1150,8 @@ static bool reconcile_network_inputs(
                 "[ROLLBACK] online correction target out of range "
                 "dirty=%u current=%u (skipped)\n",
                 dirty, last_tick);
+        ROLLBACK_LAN_LOG("[DESYNC-RISK] correction out of range dirty=%u "
+                         "current=%u (skipped)", dirty, last_tick);
         return true;
     }
     /* GRACEFUL DEEP-CORRECTION DEGRADATION (fall-behind robustness).
@@ -899,6 +1182,9 @@ static bool reconcile_network_inputs(
                 "[ROLLBACK] online correction clamped to retained window "
                 "dirty=%u->%u current=%u capacity=%u\n",
                 dirty, clamped, last_tick, MDKR_ROLLBACK_LAB_SLOTS);
+        ROLLBACK_LAN_LOG("[DESYNC-RISK] correction clamped dirty=%u->%u "
+                         "current=%u (prefix NOT replayed)",
+                         dirty, clamped, last_tick);
         dirty = clamped;
     }
     /* The boundary snapshot immediately before the (possibly clamped) rewind
@@ -909,6 +1195,8 @@ static bool reconcile_network_inputs(
                 "[ROLLBACK] online correction boundary evicted "
                 "dirty=%u current=%u (skipped)\n",
                 dirty, last_tick);
+        ROLLBACK_LAN_LOG("[DESYNC-RISK] correction boundary evicted dirty=%u "
+                         "current=%u (skipped)", dirty, last_tick);
         return true;
     }
     for (tick = dirty; tick <= last_tick; tick++) {
@@ -918,6 +1206,10 @@ static bool reconcile_network_inputs(
         if (!history->valid || history->tick != tick ||
             !mdkr_match_input_runtime_inputs_for_tick(tick, &frame) ||
             !bridge_input_samples(&frame, history->input)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "CORRECTION INPUT tick=%u current=%u",
+                     tick, last_tick);
             fprintf(stderr,
                     "[ROLLBACK] online corrected input unavailable tick=%u\n",
                     tick);
@@ -930,8 +1222,14 @@ static bool reconcile_network_inputs(
         history->confirmed_mask = frame.confirmed_mask;
     }
 
+    predicted_digest = mdkr_object_rollback_semantic_digest();
+    predicted_rng_draws = mdkr_authoritative_rng_draws();
     begin_effect_rewrite(runtime, dirty);
     if (!mdkr_rollback_ring_restore(&runtime->ring, dirty - 1u, true)) {
+        snprintf(runtime->failure_reason,
+                 sizeof(runtime->failure_reason),
+                 "CORRECTION RESTORE tick=%u current=%u",
+                 dirty - 1u, last_tick);
         force_clear_effects(runtime);
         return false;
     }
@@ -957,10 +1255,11 @@ static bool reconcile_network_inputs(
          * the room every other online-input starvation takes. The allocation
          * lifetime / dynamic coverage / snapshot capture arms below keep their
          * CLEAR flag and stay fatal, byte-for-byte. */
-        if (history->update_rate == 0u || history->update_rate > INT_MAX ||
-            !mdkr_match_input_runtime_begin_tick(tick) ||
-            !resimulate_timed(
-                runtime, (int)history->update_rate, history->input)) {
+        if (history->update_rate == 0u || history->update_rate > INT_MAX) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "CORRECTION RATE tick=%u rate=%u",
+                     tick, history->update_rate);
             force_clear_effects(runtime);
             fprintf(stderr,
                     "[ROLLBACK] online correction replay refused tick=%u "
@@ -972,22 +1271,75 @@ static bool reconcile_network_inputs(
             runtime->recoverable_refusal_sim_state = true;
             return false;
         }
-        if (!mdkr_rollback_validate_live_allocations(&runtime->registry) ||
-            !mdkr_rollback_game_authority_validate_dynamic_coverage(
-                &runtime->registry) ||
-            !mdkr_rollback_ring_capture(&runtime->ring, tick)) {
+        if (!mdkr_match_input_runtime_begin_tick(tick)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "CORRECTION BEGIN tick=%u", tick);
+            force_clear_effects(runtime);
+            runtime->recoverable_online_input_failure = true;
+            runtime->recoverable_refusal_sim_state = true;
+            return false;
+        }
+        if (!resimulate_timed(
+                runtime, (int)history->update_rate, history->input)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "CORRECTION SIM tick=%u rate=%u",
+                     tick, history->update_rate);
+            force_clear_effects(runtime);
+            runtime->recoverable_online_input_failure = true;
+            runtime->recoverable_refusal_sim_state = true;
+            return false;
+        }
+#ifdef NATIVE_PORT
+        /* Physical remote loops are presentation sidecars. Sample a replayed
+         * racer only when that slot's canonical input is confirmed, before
+         * later predicted ticks advance the corrected world again. */
+        racer_sound_capture_confirmed_network_slides(
+            history->confirmed_mask);
+#endif
+        if (!mdkr_rollback_validate_live_allocations(&runtime->registry)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "CORRECTION ALLOCATION tick=%u", tick);
             force_clear_effects(runtime);
             fprintf(stderr,
                     "[ROLLBACK] online correction replay failed tick=%u\n",
                     tick);
             return false;
         }
+        if (!mdkr_rollback_game_authority_validate_dynamic_coverage(
+                &runtime->registry)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "CORRECTION COVERAGE tick=%u", tick);
+            force_clear_effects(runtime);
+            return false;
+        }
+        if (!mdkr_rollback_ring_capture(&runtime->ring, tick)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "CORRECTION SNAPSHOT tick=%u", tick);
+            force_clear_effects(runtime);
+            return false;
+        }
+        record_tick_digest(runtime, tick, history);
     }
     end_effect_rewrite(runtime);
     memcpy(runtime->last_applied_input,
            runtime->input_history[
                last_tick % MDKR_ROLLBACK_LAB_SLOTS].input,
            sizeof(runtime->last_applied_input));
+    if (runtime->correction_digest_log_count < 32u) {
+        fprintf(stderr,
+                "[ROLLBACK-DIGEST] correction=%u..%u depth=%u "
+                "predicted=%016" PRIx64 " corrected=%016" PRIx64
+                " rng-draws=%" PRIu64 "->%" PRIu64 "\n",
+                dirty, last_tick, last_tick - dirty + 1u,
+                predicted_digest, mdkr_object_rollback_semantic_digest(),
+                predicted_rng_draws, mdkr_authoritative_rng_draws());
+        runtime->correction_digest_log_count++;
+    }
     fprintf(stderr,
             "[ROLLBACK] online correction reconciled ticks=%u..%u depth=%u\n",
             dirty, last_tick, last_tick - dirty + 1u);
@@ -1010,7 +1362,10 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
      * and prepared-twice invariants leave it clear and stay fatal. */
     runtime->recoverable_online_input_failure = false;
     runtime->recoverable_refusal_sim_state = false;
+    runtime->failure_reason[0] = '\0';
     if (runtime->validated_boundaries >= UINT32_MAX) {
+        snprintf(runtime->failure_reason, sizeof(runtime->failure_reason),
+                 "PREPARE TICK EXHAUSTED");
         return false;
     }
     tick = (uint32_t)(runtime->validated_boundaries + 1u);
@@ -1021,6 +1376,9 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
         MdkrInputSet frame;
         MdkrPadSample physical[MDKR_INPUT_PORTS];
         if (runtime->tick_prepared && runtime->prepared_tick == tick) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "PREPARE DUPLICATE tick=%u", tick);
             fprintf(stderr,
                     "[ROLLBACK] online input tick prepared twice tick=%u\n",
                     tick);
@@ -1030,18 +1388,53 @@ bool mdkr_rollback_game_runtime_prepare_tick(unsigned update_rate) {
             !reconcile_network_inputs(runtime, tick - 1u)) {
             return false;
         }
-        input_rollback_capture(polled);
+        /* Reconciliation walks historical ticks and deliberately moves the
+         * effect journal's tick/ordinal cursor with each replay. Re-arm the
+         * current authored boundary afterwards; otherwise its sounds and
+         * rumble are mislabeled as effects from the final replayed tick. A
+         * later correction can then collide with or cancel the wrong audio
+         * entry and trip the boundary side-effect invariant. */
+        begin_effect_tick(runtime, tick);
+        if (runtime->pending_transition_tick != 0u &&
+            runtime->pending_transition_tick < tick) {
+            MdkrInputSet transition_frame;
+            if (mdkr_match_input_runtime_inputs_for_tick(
+                    runtime->pending_transition_tick, &transition_frame) &&
+                transition_frame.present_mask != 0u &&
+                (transition_frame.confirmed_mask &
+                 transition_frame.present_mask) ==
+                    transition_frame.present_mask) {
+                runtime->pending_transition_confirmed = true;
+            }
+        }
+        input_rollback_capture_physical(polled);
         pad_input_samples(polled, physical);
         if (!mdkr_match_input_runtime_drain(
-                tick, physical, MDKR_INPUT_PORTS, &frame) ||
-            !bridge_input_samples(&frame, polled) ||
-            !mdkr_match_input_runtime_begin_tick(tick)) {
+                tick, physical, MDKR_INPUT_PORTS, &frame)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "INPUT DRAIN tick=%u", tick);
             fprintf(stderr,
                     "[ROLLBACK] launcher input provider rejected tick=%u\n",
                     tick);
             /* RECOVERABLE: the launcher's online input source could not supply
              * this authored tick (peer gone / input unavailable) -- e.g. a peer
              * that dropped cleanly MID-RACE. Not corruption. */
+            runtime->recoverable_online_input_failure = true;
+            return false;
+        }
+        if (!bridge_input_samples(&frame, polled)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "INPUT BRIDGE tick=%u present=%02x confirmed=%02x",
+                     tick, frame.present_mask, frame.confirmed_mask);
+            runtime->recoverable_online_input_failure = true;
+            return false;
+        }
+        if (!mdkr_match_input_runtime_begin_tick(tick)) {
+            snprintf(runtime->failure_reason,
+                     sizeof(runtime->failure_reason),
+                     "INPUT BEGIN tick=%u", tick);
             runtime->recoverable_online_input_failure = true;
             return false;
         }
@@ -1894,28 +2287,54 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
         sRollbackGameRuntime.authored_frame_timing_active = false;
     }
     if (sRollbackGameRuntime.pending_sound) {
-        sRollbackGameRuntime.side_effect_error = true;
+        reject_side_effect(
+            &sRollbackGameRuntime, "SOUND_UNBOUND",
+            sRollbackGameRuntime.pending_sound_id.tick,
+            sRollbackGameRuntime.pending_sound_id.kind,
+            sRollbackGameRuntime.pending_sound_id.ordinal);
     }
     if (sRollbackGameRuntime.side_effect_error) {
+        snprintf(sRollbackGameRuntime.failure_reason,
+                 sizeof(sRollbackGameRuntime.failure_reason),
+                 "BOUNDARY SIDE EFFECT %.52s",
+                 sRollbackGameRuntime.side_effect_failure);
         fprintf(stderr,
                 "[ROLLBACK] side-effect journal rejected the authored stream\n");
         return false;
     }
     if (!mdkr_rollback_validate_live_allocations(
-            &sRollbackGameRuntime.registry) ||
-        !mdkr_rollback_game_authority_validate_dynamic_coverage(
             &sRollbackGameRuntime.registry)) {
+        snprintf(sRollbackGameRuntime.failure_reason,
+                 sizeof(sRollbackGameRuntime.failure_reason),
+                 "BOUNDARY ALLOCATION tick=%" PRIu64,
+                 sRollbackGameRuntime.validated_boundaries + 1u);
         fprintf(stderr,
                 "[ROLLBACK] registered authority allocation lifetime or "
                 "coverage changed after freeze\n");
         return false;
     }
+    if (!mdkr_rollback_game_authority_validate_dynamic_coverage(
+            &sRollbackGameRuntime.registry)) {
+        snprintf(sRollbackGameRuntime.failure_reason,
+                 sizeof(sRollbackGameRuntime.failure_reason),
+                 "BOUNDARY COVERAGE tick=%" PRIu64,
+                 sRollbackGameRuntime.validated_boundaries + 1u);
+        fprintf(stderr,
+                "[ROLLBACK] registered authority dynamic coverage changed\n");
+        return false;
+    }
     if (sRollbackGameRuntime.validated_boundaries >= UINT32_MAX) {
+        snprintf(sRollbackGameRuntime.failure_reason,
+                 sizeof(sRollbackGameRuntime.failure_reason),
+                 "BOUNDARY TICK EXHAUSTED");
         fprintf(stderr, "[ROLLBACK] lab tick counter exhausted\n");
         return false;
     }
     tick = (uint32_t)(sRollbackGameRuntime.validated_boundaries + 1u);
     if (!mdkr_rollback_ring_capture(&sRollbackGameRuntime.ring, tick)) {
+        snprintf(sRollbackGameRuntime.failure_reason,
+                 sizeof(sRollbackGameRuntime.failure_reason),
+                 "BOUNDARY SNAPSHOT tick=%u", tick);
         fprintf(stderr,
                 "[ROLLBACK] boundary snapshot capture failed tick=%u\n",
                 (unsigned)tick);
@@ -1929,12 +2348,15 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
             MdkrInputSample physical_samples[MDKR_INPUT_PORTS];
             MdkrPadSample physical[MDKR_INPUT_PORTS];
             MdkrInputSet frame;
-            input_rollback_capture(physical_samples);
+            input_rollback_capture_physical(physical_samples);
             pad_input_samples(physical_samples, physical);
             memset(history, 0, sizeof(*history));
             if (!mdkr_match_input_runtime_drain(
                     tick, physical, MDKR_INPUT_PORTS, &frame) ||
                 !bridge_input_samples(&frame, history->input)) {
+                snprintf(sRollbackGameRuntime.failure_reason,
+                         sizeof(sRollbackGameRuntime.failure_reason),
+                         "BOOTSTRAP INPUT tick=1");
                 fprintf(stderr,
                         "[ROLLBACK] online bootstrap input unavailable tick=1\n");
                 /* RECOVERABLE: the peer/bootstrap input for the opening tick
@@ -1951,6 +2373,11 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
         } else if (!sRollbackGameRuntime.tick_prepared ||
                    sRollbackGameRuntime.prepared_tick != tick ||
                    !history->valid || history->tick != tick) {
+            snprintf(sRollbackGameRuntime.failure_reason,
+                     sizeof(sRollbackGameRuntime.failure_reason),
+                     "BOUNDARY UNPREPARED tick=%u prepared=%u valid=%u",
+                     tick, sRollbackGameRuntime.prepared_tick,
+                     history->valid ? 1u : 0u);
             fprintf(stderr,
                     "[ROLLBACK] launcher input boundary was not prepared "
                     "tick=%u\n", tick);
@@ -1960,6 +2387,17 @@ bool mdkr_rollback_game_runtime_validate_boundary(unsigned update_rate) {
             return false;
         }
         sRollbackGameRuntime.tick_prepared = false;
+        record_tick_digest(&sRollbackGameRuntime, tick, history);
+        if ((tick == 1u || tick % 120u == 0u) &&
+            sRollbackGameRuntime.state_digest_log_count < 128u) {
+            fprintf(stderr,
+                    "[ROLLBACK-DIGEST] tick=%u confirmed=%02x state=%016"
+                    PRIx64 " rng-draws=%" PRIu64 "\n",
+                    tick, history->confirmed_mask,
+                    mdkr_object_rollback_semantic_digest(),
+                    mdkr_authoritative_rng_draws());
+            sRollbackGameRuntime.state_digest_log_count++;
+        }
     } else if (sRollbackGameRuntime.delayed_input_control) {
         if ((!sRollbackGameRuntime.tick_prepared ||
              sRollbackGameRuntime.prepared_tick != tick) &&

@@ -27,6 +27,7 @@ typedef struct MdkrAudioSpatialRollbackView {
         state[MDKR_AUDIO_SPATIAL_ROLLBACK_STATE_SPAN_COUNT];
 } MdkrAudioSpatialRollbackView;
 s32 audspat_rollback_view(MdkrAudioSpatialRollbackView *view);
+void audspat_rollback_reconcile_handles(void);
 #endif
 
 /* Size: 0x24 / 36 bytes */

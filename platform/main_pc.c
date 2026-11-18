@@ -10,6 +10,9 @@
  */
 #if defined(__vita__)
 #include <vitashark.h>
+#include <psp2/power.h>
+#include <psp2/kernel/cpu.h>
+#include <psp2/kernel/threadmgr.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
@@ -67,6 +70,20 @@ static unsigned char s_mdkrDebuggerNetMemory[1024 * 1024]
 #include "modern_character_runtime.h"
 #include "user_paths.h"
 #include "app/engine_entry.h"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_ADHOC)
+#include "vita_adhoc.h"
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+#include "vita_lan.h"
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_RELAY)
+#include "vita_relay.h"
+#endif
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_ADHOC) || defined(MDKR_ENABLE_VITA_LAN) || \
+     defined(MDKR_ENABLE_VITA_RELAY))
+#include "vita_network_runtime.h"
+#endif
 
 MdkrCharacterPreviewResult *g_mdkrCharacterPreviewResult = NULL;
 MdkrCharacterMotionReviewResult *g_mdkrCharacterMotionReviewResult = NULL;
@@ -634,6 +651,25 @@ int main(int argc, char **argv) {
         char logbuf[256];
         snprintf(logbuf, sizeof(logbuf), "boot: entered main(); romPath=%s", romPath);
         mdkr_vita_boot_log(logbuf);
+        /* The OS default is 333 MHz ARM / 111 MHz GPU. Run at the maximum
+         * user clocks, and keep the game thread on core 0 so it stops
+         * migrating between cores 1 and 2; the audio synth worker
+         * (audi_port_dkr.c) and pack decoders own the other user cores. */
+        {
+            const int arm_rc = scePowerSetArmClockFrequency(444);
+            const int bus_rc = scePowerSetBusClockFrequency(222);
+            const int gpu_rc = scePowerSetGpuClockFrequency(222);
+            const int xbar_rc = scePowerSetGpuXbarClockFrequency(166);
+            const int pin_rc = sceKernelChangeThreadCpuAffinityMask(
+                sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_0);
+            snprintf(logbuf, sizeof(logbuf),
+                     "boot: clocks arm=%dMHz gpu=%dMHz (rc arm=%d bus=%d "
+                     "gpu=%d xbar=%d) main-thread core0 rc=%d",
+                     scePowerGetArmClockFrequency(),
+                     scePowerGetGpuClockFrequency(),
+                     arm_rc, bus_rc, gpu_rc, xbar_rc, pin_rc);
+            mdkr_vita_boot_log(logbuf);
+        }
         /* vitashark (the runtime GLSL->GXP shader compiler vitaGL uses)
          * hardcodes DEFAULT_SHACCCG_PATH = "ur0:/data/libshacccg.suprx"
          * (vitaShaRK/source/vitashark.c) unless a caller passes a different
@@ -926,6 +962,20 @@ shutdown:
             "[HOST-SHUTDOWN] rom=%u arena=%u delayedFree=%d\n",
             (unsigned)g_romSize, (unsigned)g_dkrArenaSize,
             (int)gFreeQueueCount);
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_ADHOC)
+    mdkr_vita_adhoc_stop();
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    mdkr_vita_lan_stop();
+#endif
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_RELAY)
+    mdkr_vita_relay_stop();
+#endif
+#if defined(__vita__) && \
+    (defined(MDKR_ENABLE_VITA_ADHOC) || defined(MDKR_ENABLE_VITA_LAN) || \
+     defined(MDKR_ENABLE_VITA_RELAY))
+    mdkr_vita_network_shutdown();
+#endif
     platform_sdl_shutdown();
 #ifdef __EMSCRIPTEN__
     EM_ASM({

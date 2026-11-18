@@ -14,6 +14,9 @@
 #include "math_util.h"
 #include "platform_os.h"
 #include "math_tables_baked.h"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+#include "vita_lan.h"
+#endif
 
 #define DKR_ANG_TO_RAD (3.14159265358979323846f / 32768.0f)
 
@@ -300,6 +303,16 @@ s32 presentation_rand_range(s32 min, s32 max) {
  * compatibility targets: byte-exact ROM ordering at the shipping original
  * cadence, and the pre-FPS native gameplay stream at opt-in enhanced cadence. */
 s32 cadence_compat_rand_range(s32 min, s32 max) {
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    /* A LAN race must not let a per-device ini cadence choose the stream. These
+     * rolls only pick sounds/texture frames, and several are gated on audio
+     * handles freed asynchronously by the audio worker and set only on live
+     * (never resimulated) frames, so on the snapshotted stream they fork peers.
+     * Mirrors the RACING override in platform_sim_cadence_is_enhanced(). */
+    if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        return presentation_rand_range(min, max);
+    }
+#endif
     if (platform_sim_tick_fields() == 2) {
         return rand_range(min, max);
     }

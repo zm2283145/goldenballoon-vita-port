@@ -30,7 +30,9 @@
 #include "racer.h"
 #include "runtime_contracts.h"
 #ifdef NATIVE_PORT
+#include "net/net_roster_runtime.h"
 #include "presentation_snapshot.h"
+#include "rollback/rollback_game_runtime.h"
 #include "taj_physics.h"
 #include "taj_visual.h"
 #include "wizpig_visual.h"
@@ -48,6 +50,9 @@
 #include "video.h"
 #include "waves.h"
 #include "weather.h"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+#include "vita_lan.h"
+#endif
 
 #ifdef NATIVE_PORT
 #include <stddef.h> /* offsetof — layout locks below */
@@ -2312,20 +2317,44 @@ static s32 taj_select_actor_trace_enabled(void) {
 }
 #endif
 
+enum {
+    CHAR_SELECT_UNLOCK_DRUMSTICK = 1u << 0,
+    CHAR_SELECT_UNLOCK_TT = 1u << 1
+};
+
+static unsigned int char_select_unlock_mask(void) {
+    unsigned int unlockMask = 0u;
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    if (mdkr_vita_lan_character_unlocks(&unlockMask)) {
+        return unlockMask;
+    }
+#endif
+    if (is_drumstick_unlocked()) {
+        unlockMask |= CHAR_SELECT_UNLOCK_DRUMSTICK;
+    }
+    if (is_tt_unlocked()) {
+        unlockMask |= CHAR_SELECT_UNLOCK_TT;
+    }
+    return unlockMask;
+}
+
 static s32 char_select_character_index(s32 actorIndex) {
     u8 *actorIDs;
+    unsigned int unlockMask;
     s32 charCount;
     s32 i;
 
-    if (is_drumstick_unlocked()) {
-        if (is_tt_unlocked()) {
-            actorIDs = gCharacterSelectAllActorIDs;
-            charCount = 10;
-        } else {
-            actorIDs = gCharacterSelectMainActorIDsPlusDrumstick;
-            charCount = 9;
-        }
-    } else if (is_tt_unlocked()) {
+    unlockMask = char_select_unlock_mask();
+    if ((unlockMask & (CHAR_SELECT_UNLOCK_DRUMSTICK |
+                       CHAR_SELECT_UNLOCK_TT)) ==
+        (CHAR_SELECT_UNLOCK_DRUMSTICK |
+         CHAR_SELECT_UNLOCK_TT)) {
+        actorIDs = gCharacterSelectAllActorIDs;
+        charCount = 10;
+    } else if (unlockMask & CHAR_SELECT_UNLOCK_DRUMSTICK) {
+        actorIDs = gCharacterSelectMainActorIDsPlusDrumstick;
+        charCount = 9;
+    } else if (unlockMask & CHAR_SELECT_UNLOCK_TT) {
         actorIDs = gCharacterSelectMainActorIDsPlusTT;
         charCount = 9;
     } else {
@@ -2465,20 +2494,27 @@ void obj_loop_char_select(Object *charSelectObj, s32 updateRate) {
                 }
             }
 #endif
-            if (is_drumstick_unlocked()) {
-                if (is_tt_unlocked()) {
-                    actorIDs = gCharacterSelectAllActorIDs;
-                    charCount = 10;
-                } else {
-                    actorIDs = gCharacterSelectMainActorIDsPlusDrumstick;
-                    charCount = 9;
-                }
-            } else if (is_tt_unlocked()) {
+            {
+                unsigned int unlockMask =
+                    char_select_unlock_mask();
+            if ((unlockMask &
+                 (CHAR_SELECT_UNLOCK_DRUMSTICK |
+                  CHAR_SELECT_UNLOCK_TT)) ==
+                (CHAR_SELECT_UNLOCK_DRUMSTICK |
+                 CHAR_SELECT_UNLOCK_TT)) {
+                actorIDs = gCharacterSelectAllActorIDs;
+                charCount = 10;
+            } else if (unlockMask &
+                       CHAR_SELECT_UNLOCK_DRUMSTICK) {
+                actorIDs = gCharacterSelectMainActorIDsPlusDrumstick;
+                charCount = 9;
+            } else if (unlockMask & CHAR_SELECT_UNLOCK_TT) {
                 actorIDs = gCharacterSelectMainActorIDsPlusTT;
                 charCount = 9;
             } else {
                 actorIDs = gCharacterSelectMainActorIDs;
                 charCount = 8;
+            }
             }
 
             for (i = 0; i < charCount && !playerIndex; i++) {
@@ -5736,7 +5772,23 @@ void obj_loop_weaponballoon(Object *weaponBalloonObj, s32 updateRate) {
                                     if (prevBalloonQuantity > 2) {
                                         prevBalloonQuantity = 2;
                                     }
-                                    sound_play(SOUND_COLLECT_ITEM + prevBalloonQuantity, NULL);
+#ifdef NATIVE_PORT
+                                    if (mdkr_net_roster_runtime_active()) {
+                                        audspat_play_sound_at_position(
+                                            SOUND_COLLECT_ITEM + prevBalloonQuantity,
+                                            weaponBalloonObj->trans.x_position,
+                                            weaponBalloonObj->trans.y_position,
+                                            weaponBalloonObj->trans.z_position,
+                                            AUDIO_POINT_FLAG_ONE_TIME_TRIGGER,
+                                            NULL);
+                                    } else
+#endif
+                                    {
+                                        sound_play(
+                                            SOUND_COLLECT_ITEM +
+                                                prevBalloonQuantity,
+                                            NULL);
+                                    }
                                 } else {
                                     audspat_play_sound_at_position(
                                         SOUND_BALLOON_POP, weaponBalloonObj->trans.x_position,
@@ -5748,7 +5800,21 @@ void obj_loop_weaponballoon(Object *weaponBalloonObj, s32 updateRate) {
                             if (racer->balloon_level > 0) {
                                 hud_sound_play_delayed(SOUND_VOICE_TT_POWERUP, 1.0f, racer->playerIndex);
                             }
-                            sound_play(SOUND_COLLECT_ITEM + racer->balloon_level, NULL);
+#ifdef NATIVE_PORT
+                            if (mdkr_net_roster_runtime_active()) {
+                                audspat_play_sound_at_position(
+                                    SOUND_COLLECT_ITEM + racer->balloon_level,
+                                    weaponBalloonObj->trans.x_position,
+                                    weaponBalloonObj->trans.y_position,
+                                    weaponBalloonObj->trans.z_position,
+                                    AUDIO_POINT_FLAG_ONE_TIME_TRIGGER, NULL);
+                            } else
+#endif
+                            {
+                                sound_play(
+                                    SOUND_COLLECT_ITEM + racer->balloon_level,
+                                    NULL);
+                            }
                         }
                     }
                     weaponBalloonObj->particleEmittersEnabled = OBJ_EMIT_1;
@@ -6103,6 +6169,17 @@ void play_rocket_trailing_sound(Object *obj, struct Object_Weapon *weapon, u16 s
     s32 shouldPlaySound;
     s32 i;
 
+#ifdef NATIVE_PORT
+    /*
+     * The trail voice and its eight-voice budget are endpoint-local
+     * presentation. A correction replay must not advance that budget from a
+     * discarded timeline or consult restored physical AudioPoint handles.
+     */
+    if (mdkr_rollback_game_runtime_active() &&
+        !mdkr_rollback_game_runtime_presentation_allowed()) {
+        return;
+    }
+#endif
     shouldPlaySound = FALSE;
     racerGroup = get_racer_objects_by_port(&numRacers);
     for (i = 0; i < numRacers; i++) {

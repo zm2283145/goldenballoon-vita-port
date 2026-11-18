@@ -1289,7 +1289,12 @@ void render_scene(Gfx **dList, Mtx **mtx, Vertex **vtx, Triangle **tris, s32 upd
     D_8011B0C0 = 0;
     gIsNearCurrBBox = FALSE;
 #ifdef NATIVE_PORT
-    endpointMappedViews = mdkr_net_roster_runtime_active();
+    /* Endpoint view mapping is for the race only. Menu background levels
+     * (results flag, track-select previews) animate camera 0 alone through
+     * their cutscene; mapping a non-host endpoint's view to its canonical
+     * seat there drew from an unanimated camera (flat flag, empty preview). */
+    endpointMappedViews = mdkr_net_roster_runtime_active() &&
+                          get_game_mode() == GAMEMODE_INGAME;
     if (endpointMappedViews) {
         /* Keep the canonical four-player layout installed for fixed-tick
          * authority. Only the number/placement of presentation passes is

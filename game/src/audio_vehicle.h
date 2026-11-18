@@ -111,6 +111,12 @@ _Static_assert(sizeof(VehicleSoundAsset) == 0x4C,
 
 void racer_sound_update(Object *obj, u32 buttonsPressed, u32 buttonsHeld, s32 ticksDelta);
 void racer_sound_free(Object *obj);
+#ifdef NATIVE_PORT
+void racer_sound_capture_confirmed_network_slides(u8 confirmedMask);
+void racer_sound_update_network_slides(s32 raceActive);
+void racer_sound_stop_active(Object *obj);
+void racer_sound_stop_all_active(void);
+#endif
 void racer_sound_doppler_effect(Object *observerObj, Camera *camera, Object *sourceObj, s32 tickDelta);
 #ifdef NATIVE_PORT
 /* Avoid colliding with libc's double log(double) in native and wasm links. */

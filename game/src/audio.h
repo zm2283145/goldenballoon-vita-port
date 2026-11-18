@@ -123,6 +123,9 @@ u32 music_jingle_playing(void);
 u16 sound_distance(u16 soundId);
 void sound_play_spatial(u16 soundID, f32 x, f32 y, f32 z, SoundHandle *handlePtr);
 void sound_play_direct(u16 soundID, SoundHandle *handlePtr);
+#ifdef NATIVE_PORT
+void sound_play_presentation(u16 soundID, SoundHandle *handlePtr);
+#endif
 u16 sound_count(void);
 u8 music_sequence_count(void);
 void sound_table_properties(SoundData **table, s32 *size, s32 *count);

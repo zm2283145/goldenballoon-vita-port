@@ -12,7 +12,8 @@
  */
 #include "online/online_race_boot.h"
 
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
 
 /* Game/PR headers FIRST (same sprintf-ordering rationale as online_charselect.c /
  * thread3_main.c: a game header can declare sprintf()/fprintf() as a plain
@@ -43,7 +44,7 @@ extern s32 gGameCurrentCutscene;
  * (load_next_ingame_level -> load_level_game -> level_load) does the rest.
  * gGameCurrentCutscene stays CUTSCENE_NONE (0) so the launch-descriptor seam in
  * level_load() applies the manifest track/vehicle. */
-void mdkr_online_boot_direct_race(
+s32 mdkr_online_prepare_direct_race(
     const MdkrMatchLaunchDescriptorV1 *launch) {
     s32 canonicalPlayers = (s32) mdkr_net_roster_runtime_canonical_player_count(2u);
     s32 trackId = (s32) launch->manifest.track_id;
@@ -82,8 +83,16 @@ void mdkr_online_boot_direct_race(
 
     gGameCurrentEntrance = 0;
     gGameCurrentCutscene = CUTSCENE_NONE;
+
+    return canonicalPlayers;
+}
+
+void mdkr_online_boot_direct_race(
+    const MdkrMatchLaunchDescriptorV1 *launch) {
+    s32 canonicalPlayers = mdkr_online_prepare_direct_race(launch);
+
     gGameMode = GAMEMODE_INGAME;
     load_next_ingame_level(canonicalPlayers, -1, get_level_default_vehicle());
 }
 
-#endif /* MDKR_ENABLE_ONLINE_BETA */
+#endif /* online beta or Vita LAN */

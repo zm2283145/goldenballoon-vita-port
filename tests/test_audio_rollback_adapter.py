@@ -21,6 +21,7 @@ def validate(
     authority: str,
     main_pc: str,
     particles: str,
+    rollback_audio: str,
 ) -> None:
     table = function(audio, "void sound_play(", "void sound_play_spatial(")
     spatial = function(audio, "void sound_play_spatial(", "void sound_play_direct(")
@@ -81,6 +82,47 @@ def validate(
     assert end_rewrite.index("mdkr_rollback_events_end_rewrite(") < end_rewrite.index(
         "mdkr_rollback_audio_flush_commands("
     )
+    prepare = function(
+        runtime,
+        "bool mdkr_rollback_game_runtime_prepare_tick(",
+        "static bool record_bootstrap_input_boundary(",
+    )
+    reconcile = prepare.index("reconcile_network_inputs(runtime, tick - 1u)")
+    authored_rearm = prepare.index("begin_effect_tick(runtime, tick);", reconcile)
+    transition = prepare.index("runtime->pending_transition_tick", authored_rearm)
+    assert reconcile < authored_rearm < transition
+    for source in (
+        "AUDIO_CANCEL",
+        "ORDINAL_OVERFLOW",
+        "JOURNAL_EMIT",
+        "AUDIO_COMMAND",
+        "SOUND_PAIR",
+        "AUDIO_REQUEST",
+        "AUDIO_REQ_INVALID",
+        "AUDIO_REQ_BINDING",
+        "AUDIO_REQ_SLOT",
+        "AUDIO_REQ_CAPACITY",
+        "SOUND_UNBOUND",
+    ):
+        assert source in runtime
+    request_adapter = function(
+        rollback_audio,
+        "bool mdkr_rollback_audio_request(",
+        "bool mdkr_rollback_audio_preview(",
+    )
+    assert "adapter->stats.duplicates++;" in request_adapter
+    assert request_adapter.index("adapter->stats.duplicates++;") < request_adapter.index(
+        "return true;", request_adapter.index("adapter->stats.duplicates++;")
+    )
+    assert (
+        "adapter->last_rejection = MDKR_ROLLBACK_AUDIO_REJECT_BINDING;"
+        in request_adapter
+    )
+    assert "adapter->last_rejection_detail = difference;" in request_adapter
+    assert (
+        "adapter->last_rejection = MDKR_ROLLBACK_AUDIO_REJECT_CAPACITY;"
+        in request_adapter
+    )
     assert "audspat_rollback_view(&audio_spatial)" in authority
     assert "TAG_ALLOC_AUDIO_POINT_POOL" in authority
     assert "MDKR_AUDIO_SPATIAL_ROLLBACK_STATE_SPAN_COUNT" in authority
@@ -108,6 +150,7 @@ def main() -> None:
         ROOT / "platform/rollback/rollback_game_authority.c",
         ROOT / "platform/main_pc.c",
         ROOT / "game/src/particles.c",
+        ROOT / "platform/rollback/rollback_audio.c",
     )
     sources = [path.read_text(encoding="utf-8") for path in paths]
     validate(*sources)
@@ -119,9 +162,16 @@ def main() -> None:
         ),
         (1, "handle->rollbackGeneration != command->generation", "false"),
         (2, "mdkr_rollback_audio_flush_commands(&runtime->audio);", ""),
+        (
+            2,
+            "        begin_effect_tick(runtime, tick);\n"
+            "        if (runtime->pending_transition_tick",
+            "        if (runtime->pending_transition_tick",
+        ),
         (3, "audspat_rollback_view(&audio_spatial)", "true"),
         (1, "gSoundStateLists.allocHead = NULL;", ""),
         (4, "reset_particles_with_assets();", "free_particle_assets();"),
+        (6, "adapter->stats.duplicates++;", "adapter->stats.rejected++;"),
     )
     for source_index, old, new in mutations:
         broken = list(sources)

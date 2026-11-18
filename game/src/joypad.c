@@ -32,6 +32,9 @@ OSContPad gControllerPrevData[MAXCONTROLLERS];
 u16 gControllerButtonsPressed[MAXCONTROLLERS];
 u16 gControllerButtonsReleased[MAXCONTROLLERS];
 u8 sPlayerID[16];
+#ifdef NATIVE_PORT
+static OSContPad sPhysicalControllerData[MAXCONTROLLERS];
+#endif
 
 /**
  * Return the serial interface message queue.
@@ -86,6 +89,10 @@ s32 input_update(s32 saveDataFlags, s32 updateRate) {
             gControllerPrevData[i] = gControllerCurrData[i];
         }
         osContGetReadData(gControllerCurrData);
+#ifdef NATIVE_PORT
+        memcpy(sPhysicalControllerData, gControllerCurrData,
+               sizeof(sPhysicalControllerData));
+#endif
         if (saveDataFlags != 0) {
             settings = get_settings();
             if (SAVE_DATA_FLAG_READ_EEPROM_INDEX(saveDataFlags)) {
@@ -284,6 +291,20 @@ void input_rollback_capture(MdkrInputSample out[MDKR_INPUT_PORTS]) {
             gControllerCurrData[port].stick_x,
             gControllerCurrData[port].stick_y,
             (gControllerCurrData[port].errno & CONT_NO_RESPONSE_ERROR) == 0};
+    }
+}
+
+void input_rollback_capture_physical(
+    MdkrInputSample out[MDKR_INPUT_PORTS]) {
+    unsigned port;
+    if (out == NULL) return;
+    for (port = 0u; port < MDKR_INPUT_PORTS; port++) {
+        out[port] = (MdkrInputSample){
+            sPhysicalControllerData[port].button,
+            sPhysicalControllerData[port].stick_x,
+            sPhysicalControllerData[port].stick_y,
+            (sPhysicalControllerData[port].errno &
+             CONT_NO_RESPONSE_ERROR) == 0};
     }
 }
 

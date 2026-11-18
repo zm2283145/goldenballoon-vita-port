@@ -24,6 +24,7 @@
 #include "user_paths.h"
 
 void platform_content_packs_apply_enabled(int enabled);
+void platform_content_packs_apply_disabled(const char *list);
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -675,7 +676,12 @@ void mdkr_video_config_publish(void) {
      *
      * Installing or removing a pack while the game runs is still a restart:
      * that is the scan, not this switch, and nothing here pretends otherwise.
+     * Choosing among installed packs (Content.PackDisabled) is live: it only
+     * flips enabled bits on the existing scan, so it goes first and a pack
+     * switched on in the same change starts from the new selection.
      */
+    platform_content_packs_apply_disabled(
+        c->values[MDKR_CONTENT_PACK_DISABLED].text);
     platform_content_packs_apply_enabled(packs_enabled != 0);
     mdkr_mod_music_set_enabled(packs_enabled);
 

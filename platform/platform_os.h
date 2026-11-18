@@ -93,6 +93,14 @@ int platform_exit_requested(void);
 int platform_exit_code(void);
 void platform_headless_tick_complete(int tick_count);
 
+#if defined(__vita__)
+/* Queue and service the nonblocking native modal used for multiplayer
+ * disconnect/desynchronization failures after returning to the title menu. */
+void platform_vita_message_dialog_queue(const char *message);
+void platform_vita_message_dialog_allow_open(void);
+int platform_vita_message_dialog_active(void);
+#endif
+
 /* Source-release timing selected by ROM identification before game boot. */
 int platform_source_tv_type(void);   /* 0 PAL, 1 NTSC, 2 MPAL */
 int platform_source_field_hz(void);  /* 50 PAL, 60 NTSC/MPAL */
@@ -156,6 +164,9 @@ int      platform_pace_field_hz(void);
 int      platform_sim_tick_fields(void);
 /* The most recent pace sample crossed a suspension/debugger rebase. */
 int      platform_vi_pace_rebased(void);
+/* Treat time since the last pace sample as a suspension: the next sample
+ * rebases instead of turning a deliberate host-side wait into catch-up. */
+void     platform_vi_request_pace_rebase(void);
 /* 0 == MDKR_VI_PACE=off: the diagnostic that injects updateRate 1 regardless of
  * elapsed time. The present subloop applies it once per tick, not per present. */
 int      platform_vi_pace_compensating(void);
@@ -429,6 +440,16 @@ int platform_modern_character_visibility_diagnostics(
  * never pays for a digest. */
 void platform_content_packs_init(void);
 void platform_content_packs_apply_enabled(int enabled);
+/* Applies a new Content.PackDisabled list to the already-scanned registry while
+ * the game runs. A no-op until a scan exists; init reads the list itself. */
+void platform_content_packs_apply_disabled(const char *list);
+/* The scanned packs, for the in-game pack selector. Count is 0 while packs are
+ * switched off (nothing has been scanned). Selectable excludes packs whose own
+ * pack.ini disables them and names that cannot appear in the list. */
+int platform_content_pack_choice_count(void);
+const char *platform_content_pack_choice_name(int index);
+int platform_content_pack_choice_selectable(int index);
+int platform_content_pack_choice_enabled(int index);
 #ifdef __vita__
 /* Offers to expand the first top-level ZIP in the Vita mods directory before
  * the registry scans it. The ZIP is removed only after a complete extraction

@@ -53,6 +53,10 @@ static MdkrMatchManifestV1 sManifest;
  * 25 Hz race. 60 by default; PAL cases set 50. */
 static int sSourceFieldHz = 60;
 
+void racer_sound_capture_confirmed_network_slides(uint8_t confirmedMask) {
+    (void)confirmedMask;
+}
+
 s32 transition_workspace_preload(void) { return TRUE; }
 uint64_t platform_perf_monotonic_ns(void) { return 1u; }
 int platform_source_field_hz(void) { return sSourceFieldHz; }
@@ -261,6 +265,10 @@ void input_rollback_capture(MdkrInputSample out[MDKR_INPUT_PORTS]) {
     out[0].present = true;
 }
 
+void input_rollback_capture_physical(MdkrInputSample out[MDKR_INPUT_PORTS]) {
+    input_rollback_capture(out);
+}
+
 void input_rollback_apply_from_previous(
     const MdkrInputSample input[MDKR_INPUT_PORTS],
     const MdkrInputSample previous[MDKR_INPUT_PORTS]) {
@@ -328,6 +336,33 @@ s32 mdkr_object_rollback_describe_object(
     (void)object_pointer;
     (void)info;
     return FALSE;
+}
+
+uint64_t mdkr_object_rollback_semantic_digest(void) {
+    return UINT64_C(0);
+}
+
+s32 gCurrentRNGSeed;
+
+uint32_t mdkr_object_rollback_racer_digest(s32 index) {
+    (void)index;
+    return 0u;
+}
+
+uint32_t mdkr_object_rollback_world_digest(void) {
+    return 0u;
+}
+
+uint32_t mdkr_object_rollback_object_count(void) {
+    return 0u;
+}
+
+uint32_t mdkr_object_rollback_racer_count(void) {
+    return 0u;
+}
+
+u64 mdkr_authoritative_rng_draws(void) {
+    return 0;
 }
 
 void mdkr_mempool_set_mutation_observer(

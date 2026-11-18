@@ -12,6 +12,20 @@ save formats). Everything below 1.0.0 predates that commitment.
 
 No changes yet.
 
+## [1.7.3] — in development (PS Vita)
+
+### Added
+
+- Experimental two-Vita local multiplayer (**Multiplayer → LAN**) with rollback
+  netcode, room hosting/joining, LAN character select, per-player HUD and a
+  per-player minimap toggle. There may still be some bugs.
+
+### Fixed
+
+- Results-screen flag and track-select previews on the non-host Vita after a
+  LAN race no longer render from an unanimated camera.
+- Version the executable as `1.7.3` and the Vita package as `01.73`.
+
 ## [1.7.2] — 2026-09-17 (PS Vita)
 
 ### Fixed

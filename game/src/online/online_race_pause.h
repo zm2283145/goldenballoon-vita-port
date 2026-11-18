@@ -17,21 +17,24 @@
  *      canonical-input runtime being active -- identical live and in resim,
  *      identical on both machines, constant for the whole race);
  *   2. START instead opens a LOCAL, presentation-only overlay menu
- *      (CONTINUE / LEAVE RACE) rendered over the still-running race. The local
- *      kart keeps driving on live pad input; the overlay consumes nothing from
- *      the sim and writes nothing the rollback authority snapshots (its state
- *      lives in this TU, unregistered), so corrections replay identically
- *      whether the overlay is open or not. LEAVE routes to the existing clean
- *      note-LEFT return-to-room path (online_session.c).
+ *      (CONTINUE / LEAVE RACE) rendered over the still-running race. Desktop
+ *      keeps driving on live pad input; Vita publishes neutral local input
+ *      while its overlay is visible so menu navigation cannot steer the kart.
+ *      The overlay writes nothing the rollback authority snapshots, so
+ *      corrections replay identically whether the overlay is open or not.
  *
  * The ENTIRE header is #if MDKR_ENABLE_ONLINE_BETA and the TU is compiled only
  * inside the beta CMake gate, so a normal (beta OFF) build sees none of this
  * and the offline pause behaviour is byte-identical (thread3_main.c's hooks are
  * likewise #if-gated).
  */
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
 
 #include "types.h"
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+#include "session/session_bridge.h"
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,10 +49,14 @@ s32 mdkr_online_race_pause_suppressed(void);
  * so it reads this frame's canonical local-seat edges and draws over the
  * completed HUD. Inert unless an online race is live. */
 void mdkr_online_race_overlay_frame(s32 updateRate);
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+void mdkr_online_race_pause_filter_local_input(MdkrPadSample *input);
+void mdkr_online_race_pause_close(void);
+#endif
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* MDKR_ENABLE_ONLINE_BETA */
+#endif /* online beta or Vita LAN */
 #endif /* MDKR_ONLINE_RACE_PAUSE_H */

@@ -233,6 +233,34 @@ s32 audspat_rollback_view(MdkrAudioSpatialRollbackView *view) {
         &D_8011AC1C, sizeof(D_8011AC1C)};
     return TRUE;
 }
+
+/* Rollback restore memcpys host SoundHandle pointers back into the pool and
+ * lines. A voice that ended after the snapshot already NULLed the *live* slot
+ * once and will never do so again, so the restored pointer is stale forever:
+ * ONE_TIME points never free (pool exhaustion -> "OUT OF AUDIO POINTS", and
+ * every later horn/pickup sound is silently dropped) and raw sndp_set_param /
+ * sndp_stop hit reused voices. Keep only handles whose live voice still
+ * points back at the slot. Presentation-only; not in the digest or sim hash. */
+void audspat_rollback_reconcile_handles(void) {
+    s32 i;
+
+    if (gAudioPointsPool != NULL) {
+        for (i = 0; i < MAX_AUDIO_POINTS; i++) {
+            AudioPoint *point = &gAudioPointsPool[i];
+            if (point->soundHandle != NULL &&
+                !sndp_handle_owned_by(point->soundHandle, &point->soundHandle)) {
+                point->soundHandle = NULL;
+            }
+        }
+    }
+    for (i = 0; i < MAX_AUDIO_LINES; i++) {
+        AudioLine *line = &gAudioLines[i];
+        if (line->type == AUDIO_LINE_TYPE_SOUND && line->soundHandle != NULL &&
+            !sndp_handle_owned_by(line->soundHandle, &line->soundHandle)) {
+            line->soundHandle = NULL;
+        }
+    }
+}
 #endif
 
 /**
@@ -867,6 +895,12 @@ void audspat_point_create(u16 soundBite, f32 x, f32 y, f32 z, u8 flags, u8 minVo
         return;
     }
     audioPoint = gFreeAudioPoints[gLastFreePointIndex--];
+#ifdef NATIVE_PORT
+    if (audioPoint->soundHandle != NULL &&
+        !sndp_handle_owned_by(audioPoint->soundHandle, &audioPoint->soundHandle)) {
+        audioPoint->soundHandle = NULL;
+    }
+#endif
     audioPoint->pos.x = x;
     audioPoint->pos.y = y;
     audioPoint->pos.z = z;

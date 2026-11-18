@@ -46,6 +46,20 @@
 > **High-resolution texture packs are supported on Vita**, including a
 > converter that prepares a pack for the handheld. See
 > [Custom content](#custom-content).
+>
+> **Local multiplayer is now supported (1.7.3, experimental).** Two Vitas on
+> the same Wi-Fi network can race each other. **There may still be some
+> bugs** — see [Local multiplayer](#ps-vita-local-multiplayer-experimental).
+
+## What's new in v1.7.3
+
+- **Local multiplayer (experimental).** Two-player races between two Vitas on
+  the same local network, with rollback netcode, per-player HUD (position,
+  lap counter and lap timer), per-player minimap toggle, and synchronized
+  race results. **There may still be some bugs**; see
+  [Local multiplayer](#ps-vita-local-multiplayer-experimental).
+- Fixed the results-screen flag and track-select previews on the second Vita
+  after a multiplayer race.
 
 ## What's new in v1.7.2
 
@@ -125,7 +139,9 @@ opening an issue with what you were doing when it happened.
 - **High framerates without touching the game.** The simulation, physics,
   music, and lap times always run at their authored pace.
 - **Local multiplayer** for 2–4 players, per-controller binding, split-screen
-  (desktop only — see the Vita status table below).
+  on desktop. On Vita, two consoles can race each other over the local
+  network instead (experimental — see
+  [Local multiplayer](#ps-vita-local-multiplayer-experimental)).
 - **Three extra racers.** Taj, Wizpig, and Terry are playable with their own
   identities and vehicles.
 - **Saves that behave**: EEPROM progress, ghosts, and settings persist.
@@ -142,7 +158,7 @@ the shared game/engine code — is in the
 | macOS (Apple silicon) | Upstream, stable |
 | Linux (x86-64) | Upstream, best effort |
 | Browser (WebGPU) | Upstream, stable |
-| **PS Vita** | **This fork, 1.7.2 — working audio and silver-coin jingles confirmed on hardware, native-resolution defaults, HD texture-pack support, persistent shader caching, non-blocking trophy unlocks, 98 homebrew trophies, control remapping, and a Save Editor. Restored is recommended; experimental preload is excluded. See [PORTING_STATUS.md](PORTING_STATUS.md).** |
+| **PS Vita** | **This fork, 1.7.2 (1.7.3 in development adds experimental two-Vita local multiplayer) — working audio and silver-coin jingles confirmed on hardware, native-resolution defaults, HD texture-pack support, persistent shader caching, non-blocking trophy unlocks, 98 homebrew trophies, control remapping, and a Save Editor. Restored is recommended; experimental preload is excluded. See [PORTING_STATUS.md](PORTING_STATUS.md).** |
 
 ## PS Vita: known limitations
 
@@ -170,9 +186,26 @@ and fixed so far, with root causes).
 - **Item-fire (Z) defaults to Triangle**, since the Vita has no analog L2/R2
   triggers for the upstream default binding to land on. The right stick
   still covers all four C-button camera directions.
+- **Local multiplayer is experimental and may still have bugs.** See
+  [Local multiplayer](#ps-vita-local-multiplayer-experimental).
 - **Broader hardware coverage is still welcome.** The full Adventure has been
   completed on real hardware, while unusual multiplayer combinations and
   third-party controllers still benefit from additional reports.
+
+## PS Vita: local multiplayer (experimental)
+
+Starting with 1.7.3, two Vitas on the same Wi-Fi network can race each other.
+On both consoles choose **Multiplayer → LAN** from the title screen; one Vita
+hosts a room and the other joins it, then both pick characters and a track.
+Each player sees their own full-screen view with their own position, lap
+counter, lap timer and minimap. Adventure mode is not available over LAN.
+
+**This feature is new and there may still be some bugs.** Known rough edges
+include the two consoles occasionally disagreeing about racer positions or
+finishing order, and frame-rate dips during busy moments of a race. Disabling
+HD texture packs on both consoles is recommended while testing. If you hit a
+problem, please open an issue and include
+`ux0:data/goldenballoon/mdkr_boot.log` from **both** Vitas.
 
 ## PS Vita trophies
 

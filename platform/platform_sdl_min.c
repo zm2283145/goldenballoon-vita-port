@@ -54,6 +54,15 @@
 #include <psp2/kernel/threadmgr.h>
 #include <dirent.h>
 #include "miniz.h"
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+#include "vita_adhoc.h"
+#endif
+#if defined(MDKR_ENABLE_VITA_LAN)
+#include "vita_lan.h"
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+#include "vita_relay.h"
+#endif
 /* vitaGL already #define's GLsync (as a plain int32_t -- see vitaGL.h) but
  * implements no real ARB_sync: no glFenceSync/glClientWaitSync/glDeleteSync.
  * The only callers of those three live in the GL-fence frame-pacing
@@ -192,6 +201,7 @@ uint64_t platform_perf_monotonic_ns(void) {
 #include "video_config.h"
 #include "mod_registry.h"
 #include "mod_texture_store.h"
+#include "mod_texture_preload.h"
 #include "mdkr_bounds.h"
 #include "gfx_ptr.h"
 #ifdef MDKR_APP
@@ -2185,6 +2195,9 @@ static MdkrModRegistry s_contentPacks;
 static int s_contentPacksActive;   /* enabled packs the scan actually kept */
 static int s_contentPacksScanned;  /* init has run at least once this process */
 static int s_contentPacksIndexed;  /* registry/store contain a completed scan */
+/* Packs whose own pack.ini sets enabled = 0. Pack selection never turns these
+ * on, because the registry's enabled bit no longer records why it is clear. */
+static unsigned char s_contentPackAuthoredOff[MDKR_MOD_MAX_PACKS];
 
 #ifdef __vita__
 #define VITA_PACK_EXTRACT_MAX_FILES 10000u
@@ -2283,6 +2296,90 @@ static int vita_pack_dialog(const char *message, int yes_no) {
         sceKernelDelayThread(16000);
     }
     return yes_no ? result.buttonId == SCE_MSG_DIALOG_BUTTON_ID_YES : 1;
+}
+
+enum VitaMessageDialogState {
+    VITA_MESSAGE_DIALOG_IDLE = 0,
+    VITA_MESSAGE_DIALOG_PENDING,
+    VITA_MESSAGE_DIALOG_RUNNING,
+    VITA_MESSAGE_DIALOG_TERMINATING,
+    VITA_MESSAGE_DIALOG_COOLDOWN
+};
+
+static enum VitaMessageDialogState s_vitaMessageDialogState;
+static SceMsgDialogUserMessageParam s_vitaMessageDialogUser;
+static SceMsgDialogParam s_vitaMessageDialogParam;
+static char s_vitaMessageDialogText[128];
+static int s_vitaMessageDialogAllowOpen;
+
+void platform_vita_message_dialog_queue(const char *message) {
+    if (s_vitaMessageDialogState != VITA_MESSAGE_DIALOG_IDLE) {
+        return;
+    }
+    snprintf(s_vitaMessageDialogText, sizeof(s_vitaMessageDialogText), "%s",
+             message != NULL ? message : "MULTIPLAYER ERROR");
+    s_vitaMessageDialogState = VITA_MESSAGE_DIALOG_PENDING;
+    s_vitaMessageDialogAllowOpen = 0;
+}
+
+void platform_vita_message_dialog_allow_open(void) {
+    if (s_vitaMessageDialogState == VITA_MESSAGE_DIALOG_PENDING) {
+        s_vitaMessageDialogAllowOpen = 1;
+    }
+}
+
+static void vita_message_dialog_update(void) {
+    SceCommonDialogStatus status;
+    if (s_vitaMessageDialogState == VITA_MESSAGE_DIALOG_PENDING) {
+        if (!s_vitaMessageDialogAllowOpen) {
+            return;
+        }
+        memset(&s_vitaMessageDialogUser, 0,
+               sizeof(s_vitaMessageDialogUser));
+        s_vitaMessageDialogUser.buttonType =
+            SCE_MSG_DIALOG_BUTTON_TYPE_OK;
+        s_vitaMessageDialogUser.msg =
+            (const SceChar8 *)s_vitaMessageDialogText;
+        sceMsgDialogParamInit(&s_vitaMessageDialogParam);
+        s_vitaMessageDialogParam.mode = SCE_MSG_DIALOG_MODE_USER_MSG;
+        s_vitaMessageDialogParam.userMsgParam =
+            &s_vitaMessageDialogUser;
+        if (sceMsgDialogInit(&s_vitaMessageDialogParam) < 0) {
+            s_vitaMessageDialogState = VITA_MESSAGE_DIALOG_IDLE;
+            s_vitaMessageDialogText[0] = '\0';
+            s_vitaMessageDialogAllowOpen = 0;
+            return;
+        }
+        s_vitaMessageDialogState = VITA_MESSAGE_DIALOG_RUNNING;
+        return;
+    }
+    if (s_vitaMessageDialogState == VITA_MESSAGE_DIALOG_RUNNING) {
+        status = sceMsgDialogGetStatus();
+        if (status == SCE_COMMON_DIALOG_STATUS_FINISHED) {
+            SceMsgDialogResult result;
+            memset(&result, 0, sizeof(result));
+            (void)sceMsgDialogGetResult(&result);
+            (void)sceMsgDialogTerm();
+            s_vitaMessageDialogState =
+                VITA_MESSAGE_DIALOG_TERMINATING;
+        }
+        return;
+    }
+    if (s_vitaMessageDialogState == VITA_MESSAGE_DIALOG_TERMINATING) {
+        if (sceMsgDialogGetStatus() == SCE_COMMON_DIALOG_STATUS_NONE) {
+            s_vitaMessageDialogState = VITA_MESSAGE_DIALOG_COOLDOWN;
+        }
+        return;
+    }
+    if (s_vitaMessageDialogState == VITA_MESSAGE_DIALOG_COOLDOWN) {
+        s_vitaMessageDialogState = VITA_MESSAGE_DIALOG_IDLE;
+        s_vitaMessageDialogText[0] = '\0';
+        s_vitaMessageDialogAllowOpen = 0;
+    }
+}
+
+int platform_vita_message_dialog_active(void) {
+    return s_vitaMessageDialogState != VITA_MESSAGE_DIALOG_IDLE;
 }
 
 static int vita_pack_progress_begin(void) {
@@ -2585,6 +2682,10 @@ void platform_content_packs_init(void) {
 
     s_contentPacksActive = 0;
     s_contentPacksScanned = 1;
+    memset(s_contentPackAuthoredOff, 0, sizeof s_contentPackAuthoredOff);
+    /* The store borrows the registry's path strings, and its decode workers may
+     * be reading one right now; unbind it before the registry is released. */
+    mdkr_mod_texture_store_shutdown();
     if (!mdkr_user_mods_directory(mods_dir, sizeof mods_dir)) {
         /* Only reachable when the packaged preference directory could not be
          * prepared, which mdkr_user_paths_init() has already reported. Content
@@ -2633,6 +2734,7 @@ void platform_content_packs_init(void) {
         MdkrModEntry *entry = &s_contentPacks.entries[index];
         if (!entry->manifest.enabled) {
             authored_off++;
+            s_contentPackAuthoredOff[index] = 1;
         } else if (platform_content_pack_name_disabled(
                        disabled_list, entry->manifest.name)) {
             entry->manifest.enabled = 0;
@@ -2643,6 +2745,7 @@ void platform_content_packs_init(void) {
     }
 
     mdkr_mod_texture_store_init(&s_contentPacks);
+    mdkr_mod_texture_preload_boot();
     mdkr_mod_texture_set_enabled(packs_enabled);
     s_contentPacksIndexed = 1;
 
@@ -2742,6 +2845,61 @@ void platform_content_packs_apply_enabled(int enabled) {
         platform_content_packs_init();
     }
     mdkr_mod_texture_set_enabled(enabled != 0 && s_contentPacksIndexed);
+}
+
+/* Content.PackDisabled applied live. The Rice index consults each pack's
+ * enabled bit on every lookup, so selecting packs needs no rescan: flip the
+ * bits, rebind the store (which drops decoded pixels from the old selection and
+ * retires their GPU uploads through the generation), and re-arm the preload. */
+void platform_content_packs_apply_disabled(const char *list) {
+    int count;
+    int index;
+    int changed = 0;
+    int active = 0;
+
+    if (!s_contentPacksIndexed) return;   /* the next init reads the list */
+    count = mdkr_mod_registry_count(&s_contentPacks);
+    for (index = 0; index < count && index < MDKR_MOD_MAX_PACKS; index++) {
+        MdkrModEntry *entry = &s_contentPacks.entries[index];
+        const int enabled = !s_contentPackAuthoredOff[index] &&
+            !platform_content_pack_name_disabled(list, entry->manifest.name);
+        if (entry->manifest.enabled != enabled) changed = 1;
+        entry->manifest.enabled = enabled;
+        if (enabled) active++;
+    }
+    if (!changed) return;
+    mdkr_mod_texture_store_init(&s_contentPacks);
+    mdkr_mod_texture_preload_boot();
+    s_contentPacksActive = active;
+    fprintf(stderr, "[MODS] pack selection changed: %d pack(s) active\n",
+            active);
+    for (index = 0; index < count; index++) {
+        if (s_contentPacks.entries[index].manifest.enabled) {
+            fprintf(stderr, "[MODS]   active: %s\n",
+                    s_contentPacks.entries[index].manifest.name);
+        }
+    }
+}
+
+int platform_content_pack_choice_count(void) {
+    return s_contentPacksIndexed ? mdkr_mod_registry_count(&s_contentPacks) : 0;
+}
+
+const char *platform_content_pack_choice_name(int index) {
+    if (index < 0 || index >= platform_content_pack_choice_count()) return NULL;
+    return s_contentPacks.entries[index].manifest.name;
+}
+
+int platform_content_pack_choice_selectable(int index) {
+    const char *name = platform_content_pack_choice_name(index);
+    /* A name with a comma cannot be written into the comma-separated list. */
+    return name != NULL && index < MDKR_MOD_MAX_PACKS &&
+           !s_contentPackAuthoredOff[index] && strchr(name, ',') == NULL;
+}
+
+int platform_content_pack_choice_enabled(int index) {
+    if (index < 0 || index >= platform_content_pack_choice_count()) return 0;
+    return s_contentPacks.entries[index].manifest.enabled != 0;
 }
 
 void platform_content_packs_toggle(void) {
@@ -4444,6 +4602,46 @@ static void sdl_gl_resource_heartbeat(const char *phase, int force) {
     fflush(stderr);
 }
 
+#if defined(__vita__)
+static GLboolean s_vitaHasCommonDialog = GL_FALSE;
+
+static void platform_vita_frame_service(void) {
+    GLboolean hasCommonDialog = GL_FALSE;
+#if defined(MDKR_ENABLE_VITA_LAN)
+    mdkr_vita_lan_update();
+#endif
+#if defined(MDKR_ENABLE_VITA_ADHOC)
+    hasCommonDialog |=
+        mdkr_vita_adhoc_state() == MDKR_VITA_ADHOC_CONNECTING;
+#endif
+#if defined(MDKR_ENABLE_VITA_LAN)
+    hasCommonDialog |= mdkr_vita_lan_state() == MDKR_VITA_LAN_NAMING;
+#endif
+#if defined(MDKR_ENABLE_VITA_RELAY)
+    hasCommonDialog |=
+        mdkr_vita_relay_state() == MDKR_VITA_RELAY_NAMING;
+#endif
+    vita_message_dialog_update();
+    hasCommonDialog |= platform_vita_message_dialog_active();
+    s_vitaHasCommonDialog = hasCommonDialog;
+    {
+        static int s_vitaFrameServiceLogCount = 0;
+        if (s_vitaFrameServiceLogCount < 8) {
+            GLenum vitaPresentErr = glGetError();
+            char plb[128];
+            snprintf(
+                plb, sizeof(plb),
+                "present: frame=%u glGetError-before-service=0x%x",
+                (unsigned)g_surfaceFrameCounter,
+                (unsigned)vitaPresentErr);
+            mdkr_vita_boot_log(plb);
+            s_vitaFrameServiceLogCount++;
+        }
+        mdkr_vita_boot_log_flush();
+    }
+}
+#endif
+
 void platform_sdl_present(void) {
     if (s_glReady) {
         /* The F3DDKR backend clears + renders into the default framebuffer each
@@ -4462,20 +4660,8 @@ void platform_sdl_present(void) {
         sdl_gl_resource_heartbeat("before-swap", 0);
 #if defined(__vita__)
         MdkrVitaProfileScope swapScope;
-        {
-            static int s_vitaPresentLogCount = 0;
-            if (s_vitaPresentLogCount < 8) {
-                GLenum vitaPresentErr = glGetError();
-                char plb[128];
-                snprintf(plb, sizeof(plb), "present: frame=%u glGetError-before-swap=0x%x",
-                         (unsigned)g_surfaceFrameCounter, (unsigned)vitaPresentErr);
-                mdkr_vita_boot_log(plb);
-                s_vitaPresentLogCount++;
-            }
-            mdkr_vita_boot_log_flush();
-        }
         mdkr_vita_profiler_zone_begin(MDKR_VP_ZONE_BUFFER_SWAP, &swapScope);
-        vglSwapBuffers(GL_FALSE);
+        vglSwapBuffers(s_vitaHasCommonDialog);
         mdkr_vita_profiler_zone_end(&swapScope);
 #else
         SDL_GL_SwapWindow(s_window);
@@ -4948,6 +5134,16 @@ bool platform_sim_cadence_is_enhanced(void) {
      * before any racer update runs, and defaults to 2 (Original) -- so an
      * unexpectedly early call reports Original and leaves the authored path
      * untouched, which is the fail-safe direction. */
+#if defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN)
+    /* The title-menu Vita LAN flow starts inside an already-running engine,
+     * after the process pacer may have latched the player's Enhanced setting.
+     * Its manifest nevertheless authors 30 Hz/two-field gameplay, so cadence
+     * compatibility gates must follow that active match rather than the stale
+     * process-level presentation choice. */
+    if (mdkr_vita_lan_state() == MDKR_VITA_LAN_RACING) {
+        return false;
+    }
+#endif
     return s_minFields == 1;
 }
 
@@ -5200,6 +5396,10 @@ int platform_sim_tick_fields(void) {
 
 int platform_vi_pace_rebased(void) {
     return s_viLastPaceRebased;
+}
+
+void platform_vi_request_pace_rebase(void) {
+    s_surfaceResumeRebasePending = 1;
 }
 
 int platform_vi_pace_compensating(void) {
@@ -6713,6 +6913,11 @@ void mdkr_ground_probe(int playerIndex, int racerIndex, int groundedWheels, int 
 static void platform_frame_sync_impl(int swap, int count_present) {
     int renderer_recovered = 0;
     platform_input_pump();   /* pump events + build pad state before retrace */
+#if defined(__vita__)
+    /* A held front image deliberately performs no buffer swap, but online
+     * transport and native dialogs are frame services, not swap side effects. */
+    platform_vita_frame_service();
+#endif
     if (platform_exit_requested()) {
         return;
     }

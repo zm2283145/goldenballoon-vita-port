@@ -13,7 +13,8 @@
  * CMake gate (game/src/online/ is NOT auto-globbed). Include is safe without the
  * macro: the body just vanishes.
  */
-#if MDKR_ENABLE_ONLINE_BETA
+#if MDKR_ENABLE_ONLINE_BETA || \
+    (defined(__vita__) && defined(MDKR_ENABLE_VITA_LAN))
 
 #include "types.h"
 #include "net/match_launch_descriptor.h" /* MdkrMatchLaunchDescriptorV1 */
@@ -21,6 +22,13 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Prepare the ordinary menu-to-game transition for the online race described
+ * by the installed launch descriptor. Returns the canonical player count that
+ * the menu loop must return to mode_menu(), which then performs the normal menu
+ * teardown before loading the level. */
+s32 mdkr_online_prepare_direct_race(
+    const MdkrMatchLaunchDescriptorV1 *launch);
 
 /* Boot straight into the online race described by the installed launch
  * descriptor, bypassing the entire single-player front-end (title screen, Wizpig
@@ -39,5 +47,5 @@ void mdkr_online_boot_direct_race(const MdkrMatchLaunchDescriptorV1 *launch);
 }
 #endif
 
-#endif /* MDKR_ENABLE_ONLINE_BETA */
+#endif /* online beta or Vita LAN */
 #endif /* MDKR_ONLINE_RACE_BOOT_H */
